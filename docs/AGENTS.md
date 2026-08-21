@@ -25,6 +25,8 @@ any later time.
 | `task_result(task_id)` | get the finished output |
 | `list_tasks(state?)` / `cancel_task(task_id)` | survey and stop work |
 | `provide_input(task_id, message)` | answer an agent that parked a task on `input_required` |
+| `wait_task(task_id, wait_s≤60)` | wait efficiently for a state change (one call/min, early return) |
+| `task_files(task_id)` / `task_file(task_id, path)` | list and pull the files a task produced on its worker |
 | `send_message(to, message)` / `fetch_messages(wait_s?)` | 1:1 multi-turn |
 | `create_room(topic, participants, …)` / `post(room, message)` | group conversation |
 | `start_dialogue(participants, goal, …)` | agents converse autonomously; you observe |
@@ -53,6 +55,21 @@ fleet's tiers in a project `CLAUDE.md`.
 Check `task_status` when you next have a reason to, not in a tight loop. For a
 conversational reply, use a single `fetch_messages(wait_s=30)` rather than many bare
 polls.
+
+## The buildout pattern
+
+For "spec it here, build it there": dispatch to a worker with a workspace (file tools
+or a `cli` coding-agent backend), then bring the results home:
+
+```
+submit_task(title="landing page", spec=<the design spec>, assignee="carpenter")
+# spawn farmteam-watcher in the background with the task id — it appears in the
+# subagent panel, waits via wait_task, and writes returned files into the project.
+# Or do it inline:
+wait_task("task_ab12cd")             # repeat while not done
+task_files("task_ab12cd")            # → index.html, css/styles.css
+task_file("task_ab12cd", "index.html")   # fetch content, Write it into the repo
+```
 
 ## Worked example
 

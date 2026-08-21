@@ -60,7 +60,22 @@ asks in the task's room; answer with `provide_input(task_id, "...")` and it resu
 then `fetch_messages()` to read replies (`fetch_messages(wait_s=30)` waits for the next
 one). For a group, `create_room(...)` then `post(...)`.
 
-**3. Let agents talk to each other.** `start_dialogue([a, b], goal="...")` seeds a bounded
+**3. Dispatch a buildout and get the files back.** A worker with a workspace (file
+tools or a CLI-agent backend) returns everything it creates. After it completes:
+
+```
+task_files("task_ab12cd")            # manifest of produced files
+task_file("task_ab12cd", "index.html")   # fetch one; then Write it into the project
+```
+
+**4. Show the task in the subagent panel.** Right after `submit_task`, spawn the
+`farmteam-watcher` subagent **in the background** with the task id (and the destination
+directory for returned files). It represents the local worker in the panel like a
+native subagent, waits efficiently via `wait_task`, writes returned files into the
+project, and reports the result when the worker finishes — so you keep working in the
+meantime instead of polling.
+
+**5. Let agents talk to each other.** `start_dialogue([a, b], goal="...")` seeds a bounded
 room and the agents converse on their own. Watch with `room_transcript(room)`, steer by
 `post`ing into it, and stop early with `archive_room(room)`. Every dialogue is capped by
 the hub, so it cannot run forever.
@@ -70,6 +85,7 @@ the hub, so it cannot run forever.
 - **Never poll in a tight loop.** `submit_task` is instant; check status when you next
   have a reason to, not repeatedly. For a conversational reply, prefer one
   `fetch_messages(wait_s=…)` over many bare calls.
+- **Prefer `wait_task` over polling** when you do wait on a task yourself — one call per minute, returns early on any change.
 - **Name yourself once** with `set_identity("...")` if several sessions share this hub, so
   replies route to you.
 - **Report honestly.** If a task `failed`, say so and show the error; do not pretend a

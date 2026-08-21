@@ -17,6 +17,7 @@ from pathlib import Path
 from ..models import (
     DEFAULT_TASK_TIMEOUT_S,
     HEARTBEAT_TTL_S,
+    MAX_ARTIFACT_BYTES,
     Agent,
     AgentKind,
     ErrorCode,
@@ -58,6 +59,7 @@ class Store:
         self.path = str(path)
         self.bus = bus or EventBus()
         self._lock = threading.RLock()
+        self._artifact_blobs: dict[str, bytes] = {}  # in-memory stores only (tests)
         if self.path != ":memory:":
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(self.path, check_same_thread=False)
@@ -1066,6 +1068,68 @@ class Store:
             f"farm team lifetime: {stats['tasks_completed']} tasks · "
             f"~{stats['local_tokens']:,} tokens kept local · {clock} of work on your hardware"
         )
+
+    # -------------------------------------------------------------- artifacts
+
+    def _artifact_dir(self) -> Path | None:
+        if self.path == ":memory:":
+            return None
+        return Path(self.path).parent / "artifacts"
+
+    def save_artifact(self, name: str, mime: str, content: bytes, created_by: str) -> dict:
+        """Store a file a worker produced, so a requester on another machine can pull it."""
+        if len(content) > MAX_ARTIFACT_BYTES:
+            raise HubError(
+                ErrorCode.INVALID,
+                f"artifact exceeds {MAX_ARTIFACT_BYTES // (1024 * 1024)}MB cap",
+            )
+        artifact_id = new_id("art")
+        digest = hashlib.sha256(content).hexdigest()
+        directory = self._artifact_dir()
+        if directory is None:
+            self._artifact_blobs[artifact_id] = content
+        else:
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / artifact_id).write_bytes(content)
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO artifacts (id, name, mime, bytes, sha256, created_by, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (artifact_id, name, mime, len(content), digest, created_by, now()),
+            )
+            self._db.commit()
+        return {
+            "id": artifact_id,
+            "name": name,
+            "mime": mime,
+            "bytes": len(content),
+            "sha256": digest,
+        }
+
+    def get_artifact(self, artifact_id: str) -> tuple[dict, bytes]:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM artifacts WHERE id = ?", (artifact_id,)
+            ).fetchone()
+        if row is None:
+            raise not_found(f"artifact '{artifact_id}'")
+        directory = self._artifact_dir()
+        if directory is None:
+            content = self._artifact_blobs.get(artifact_id)
+        else:
+            path = directory / artifact_id
+            content = path.read_bytes() if path.exists() else None
+        if content is None:
+            raise not_found(f"artifact '{artifact_id}' content")
+        meta = {
+            "id": row["id"],
+            "name": row["name"],
+            "mime": row["mime"],
+            "bytes": row["bytes"],
+            "sha256": row["sha256"],
+            "created_by": row["created_by"],
+        }
+        return meta, content
 
     # --------------------------------------------------------------- janitor
 

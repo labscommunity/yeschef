@@ -30,6 +30,8 @@ def agent_token_path(name: str):
 
 HEARTBEAT_INTERVAL_S = 10.0
 MAX_TRACKED_ROOMS = 256
+MAX_RETURN_FILES = 40
+MAX_RETURN_FILE_BYTES = 512 * 1024
 TASK_ROOM_PREFIX = "room_task_"
 """A task's room is `room_` + the task id, and task ids start with `task_`."""
 
@@ -275,6 +277,7 @@ class Harness:
 
     async def _work_task(self, task: dict) -> None:
         task_id = task["id"]
+        workspace = self._task_workspace(task_id)
         try:
             await self.client.progress(task_id, pct=5.0, message="started")
             system = (
@@ -284,6 +287,11 @@ class Harness:
                 "proceed without a decision only the requester can make, say exactly "
                 "NEED_INPUT: followed by your question."
             )
+            if workspace is not None:
+                system += (
+                    "\n\nWork inside your current workspace directory. Files you create "
+                    "there are returned to the requester when you finish."
+                )
             turns = [Turn(role="user", content=f"Task: {task['title']}\n\n{task['spec']}")]
 
             for round_index in range(4):
@@ -317,16 +325,17 @@ class Harness:
                     turns.append(Turn(role="user", content=answer))
                     continue
 
-                await self.client.complete(
-                    task_id,
-                    {
-                        "text": text,
-                        "tokens": result.total_tokens,
-                        "rounds": round_index + 1,
-                        "tool_rounds": tool_rounds,
-                        "model": self.backend.model,
-                    },
-                )
+                payload = {
+                    "text": text,
+                    "tokens": result.total_tokens,
+                    "rounds": round_index + 1,
+                    "tool_rounds": tool_rounds,
+                    "model": self.backend.model,
+                }
+                files = await self._collect_workspace(task_id, workspace)
+                if files is not None:
+                    payload["files"] = files
+                await self.client.complete(task_id, payload)
                 return
 
             await self.client.fail(task_id, "exceeded input rounds without completing")
@@ -339,6 +348,56 @@ class Harness:
             log.exception("task %s failed", task_id)
             with contextlib.suppress(HubClientError):
                 await self.client.fail(task_id, f"{type(exc).__name__}: {exc}")
+
+    def _task_workspace(self, task_id: str):
+        """A fresh directory per task, jailing its tools and collecting its output.
+
+        Exists when the agent can produce files at all — file tools or a CLI agent.
+        Without it, a task's files land somewhere on the worker with no way back to
+        the requester (the exact failure the first live buildout hit).
+        """
+        from pathlib import Path
+
+        wants = getattr(self.backend, "uses_workspace", False) or any(
+            tool.startswith("file") for tool in self.config.tools.allow
+        )
+        if not wants:
+            return None
+        root = Path(self.config.tools.file_root or "~/agent-scratch").expanduser()
+        workspace = root / task_id
+        workspace.mkdir(parents=True, exist_ok=True)
+        if getattr(self.backend, "uses_workspace", False):
+            self.backend.workspace = str(workspace)
+        return workspace
+
+    async def _collect_workspace(self, task_id: str, workspace) -> list[dict] | None:
+        """Ship every file the task produced to the hub, so the requester can pull it."""
+        if workspace is None:
+            return None
+        skip_dirs = {".git", "node_modules", "__pycache__", ".venv"}
+        manifest: list[dict] = []
+        files = [
+            f
+            for f in sorted(workspace.rglob("*"))
+            if f.is_file() and not (set(f.relative_to(workspace).parts) & skip_dirs)
+        ]
+        for path in files[:MAX_RETURN_FILES]:
+            rel = str(path.relative_to(workspace))
+            content = path.read_bytes()
+            if len(content) > MAX_RETURN_FILE_BYTES:
+                manifest.append({"path": rel, "bytes": len(content), "skipped": "too large"})
+                continue
+            try:
+                artifact = await self.client.upload_artifact(rel, content)
+            except HubClientError as exc:
+                manifest.append({"path": rel, "bytes": len(content), "skipped": str(exc)})
+                continue
+            manifest.append({"path": rel, "bytes": len(content), "artifact_id": artifact["id"]})
+        if len(files) > MAX_RETURN_FILES:
+            manifest.append(
+                {"path": f"(+{len(files) - MAX_RETURN_FILES} more)", "skipped": "file cap"}
+            )
+        return manifest
 
     def _drain_task_context(self, task_id: str, turns: list[Turn]) -> None:
         """Fold messages posted into the task's room into the working context."""
@@ -359,13 +418,25 @@ class Harness:
 
     # ------------------------------------------------------------ model loop
 
+    def _task_tools(self, task_id: str | None):
+        """File tools jailed to the task's own workspace, not the shared root."""
+        if task_id is None or not self.tools.enabled:
+            return self.tools
+        from dataclasses import replace as dc_replace
+
+        from ..tools.executor import ToolExecutor
+
+        root = str(self._task_workspace(task_id) or self.tools.root or "~/agent-scratch")
+        return ToolExecutor(dc_replace(self.config.tools, file_root=root))
+
     async def _run_model(self, system: str, turns: list[Turn], task_id: str | None = None):
         """One model call, plus the tool loop if this agent has tools enabled.
 
         Returns (result, tool_rounds) — the count matters because a reply that merely
         *describes* tool calls is only suspicious when no tool actually ran.
         """
-        specs = self.tools.specs() if self.tools.enabled else None
+        executor = self._task_tools(task_id)
+        specs = executor.specs() if executor.enabled else None
         result = await self.backend.chat(
             system,
             turns,
@@ -384,7 +455,7 @@ class Harness:
                         pct=min(90.0, 10.0 + iterations * 15.0),
                         message=f"tools: {names}",
                     )
-            results: list[ToolResult] = [await self.tools.run(call) for call in result.tool_calls]
+            results: list[ToolResult] = [await executor.run(call) for call in result.tool_calls]
             turns.append(Turn(role="assistant", content=result.text, tool_calls=result.tool_calls))
             turns.append(Turn(role="user", content="", tool_results=results))
             result = await self.backend.chat(

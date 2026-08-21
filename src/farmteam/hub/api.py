@@ -410,6 +410,31 @@ def build_router(store: Store, config: HubConfig) -> APIRouter:
         cancelled = store.cancel_task(task_id, who or "admin", privileged=privileged)
         return {"task": cancelled.to_dict()}
 
+    # ---------------------------------------------------------- artifacts
+
+    @router.post("/artifacts")
+    def upload_artifact(payload: dict = Body(...), authorization: AuthHeader = None) -> dict:
+        who = payload["as_agent"]
+        auth.agent(who, authorization)
+        import base64
+
+        content = base64.b64decode(payload["content_b64"])
+        meta = store.save_artifact(
+            name=payload.get("name", "artifact"),
+            mime=payload.get("mime", "application/octet-stream"),
+            content=content,
+            created_by=who,
+        )
+        return {"artifact": meta}
+
+    @router.get("/artifacts/{artifact_id}")
+    def download_artifact(artifact_id: str, authorization: AuthHeader = None) -> dict:
+        auth.reader(authorization)
+        import base64
+
+        meta, content = store.get_artifact(artifact_id)
+        return {"artifact": meta, "content_b64": base64.b64encode(content).decode()}
+
     # -------------------------------------------------------------- watch
 
     @router.get("/watch")

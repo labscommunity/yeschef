@@ -1,0 +1,44 @@
+# A worker whose engine is the full Claude Code harness running against a LOCAL model.
+#
+# This is the buildout configuration: instead of a chat loop with a few bounded tool
+# calls, the whole task is handed to `claude -p`, which brings its own deep agentic
+# loop — file edits, shell, iteration — while Ollama v0.14+ serves the model locally,
+# so it costs no API tokens. Files the run produces in its task workspace are shipped
+# back to the hub for the requester to pull with task_files / task_file.
+#
+#   farmteam agent run -c examples/agents/claude-code-worker.toml
+#
+# Swap the command for any agent CLI you prefer (opencode, aider…) — anything that
+# takes a prompt and works in the current directory.
+
+name = "carpenter"
+hub = "http://hub-host:8787"
+tags = ["tier:build", "agent:claude-code"]
+
+[backend]
+type = "cli"
+model = "claude-code/qwen3:8b"          # label shown on the roster
+command = ["claude", "-p", "{prompt}", "--dangerously-skip-permissions"]
+timeout_s = 1800
+
+[backend.env]
+# Point the harness at the local model server. Remove both lines to run against the
+# Anthropic API instead (uses your subscription, needs auth on this machine).
+ANTHROPIC_BASE_URL = "http://localhost:11434"
+ANTHROPIC_API_KEY = "ollama"
+
+[persona]
+system_prompt = """
+You are {name}, a build agent on the farm team. You receive complete build tasks.
+Create real, working files in your current directory; verify your work; then reply
+with a short summary of what you built.
+"""
+
+[runtime]
+max_concurrent_tasks = 1
+
+# file_root is where per-task workspaces are created; the CLI agent runs inside the
+# task's own directory and everything it writes there is returned to the requester.
+[tools]
+allow = []
+file_root = "~/agent-scratch"

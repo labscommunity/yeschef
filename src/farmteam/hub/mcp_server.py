@@ -29,6 +29,9 @@ from ..models import (
 from .api import HubConfig
 from .store import Store
 
+MAX_FILE_FETCH_BYTES = 200 * 1024
+"""task_file responses land in Claude's context; larger files go over HTTP instead."""
+
 
 class IdentityResolver:
     """Maps an MCP session to a hub identity, defaulting to one shared local label."""
@@ -409,6 +412,71 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
     def provide_input(task_id: str, message: str) -> dict:
         """Answer an agent that parked a task in input_required, resuming it."""
         return {"task": store.provide_input(task_id, ident.current(), message).to_dict()}
+
+    @mcp.tool
+    @_guard
+    async def wait_task(task_id: str, wait_s: float = 60.0) -> dict:
+        """Wait (up to 60s) for a task to change state or finish, then report it.
+
+        The efficient way to watch a task: one call per minute instead of a tight
+        polling loop. Returns immediately once the task reaches a terminal state.
+        """
+        task = store.require_task(task_id)
+        initial = str(task.state)
+        deadline = asyncio.get_running_loop().time() + min(wait_s, MAX_LONG_POLL_S)
+        while asyncio.get_running_loop().time() < deadline:
+            if task.state.terminal or str(task.state) != initial:
+                break
+            await asyncio.sleep(2.0)
+            task = store.require_task(task_id)
+        return {
+            "task": task.to_dict(),
+            "changed": str(task.state) != initial,
+            "done": task.state.terminal,
+        }
+
+    @mcp.tool
+    @_guard
+    def task_files(task_id: str) -> dict:
+        """List the files a completed task produced on its worker.
+
+        Follow up with task_file(task_id, path) to pull each one and write it into
+        the project — this is how a buildout dispatched to another machine comes home.
+        """
+        task = store.require_task(task_id)
+        files = (task.result or {}).get("files") or []
+        return {"task_id": task.id, "state": str(task.state), "files": files}
+
+    @mcp.tool
+    @_guard
+    def task_file(task_id: str, path: str) -> dict:
+        """Fetch one file a task produced. Text comes back as `content`; binary as base64."""
+        import base64
+
+        task = store.require_task(task_id)
+        manifest = (task.result or {}).get("files") or []
+        entry = next((f for f in manifest if f.get("path") == path), None)
+        if entry is None or "artifact_id" not in entry:
+            raise HubError(
+                ErrorCode.NOT_FOUND,
+                f"task has no returned file '{path}' — task_files lists what came back",
+                404,
+            )
+        meta, content = store.get_artifact(entry["artifact_id"])
+        if len(content) > MAX_FILE_FETCH_BYTES:
+            raise HubError(
+                ErrorCode.INVALID,
+                f"file is {len(content)} bytes; fetch it over HTTP: "
+                f"/api/v1/artifacts/{entry['artifact_id']}",
+            )
+        try:
+            return {"path": path, "content": content.decode("utf-8"), "bytes": meta["bytes"]}
+        except UnicodeDecodeError:
+            return {
+                "path": path,
+                "content_b64": base64.b64encode(content).decode(),
+                "bytes": meta["bytes"],
+            }
 
     @mcp.tool
     @_guard

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .anthropic_compat import AnthropicCompatBackend
 from .base import Backend, ChatResult, ToolCall, ToolResult, Turn
+from .cli import CliBackend
 from .openai_compat import OpenAICompatBackend
 
 
@@ -14,6 +15,13 @@ def build_backend(config: dict) -> Backend:
     shares the adapter and only differs in defaults.
     """
     kind = (config.get("type") or "openai_compat").lower()
+    if kind == "cli":
+        return CliBackend(
+            command=list(config.get("command") or []),
+            model=config.get("model", "cli-agent"),
+            timeout=float(config.get("timeout_s", 1800.0)),
+            env=dict(config.get("env") or {}),
+        )
     common = {
         "base_url": config["base_url"],
         "model": config["model"],
@@ -34,6 +42,7 @@ def build_backend(config: dict) -> Backend:
 __all__ = [
     "AnthropicCompatBackend",
     "Backend",
+    "CliBackend",
     "ChatResult",
     "OpenAICompatBackend",
     "ToolCall",

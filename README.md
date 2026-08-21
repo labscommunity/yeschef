@@ -82,6 +82,36 @@ working a problem — and you can type into the middle of it. Every room is **bo
 construction** (message caps, token budgets, idle timeouts, stop phrases — enforced by
 the hub, not by hoping), so nothing loops forever.
 
+## Dispatch a buildout, get the files back
+
+Every task with a workspace returns what it builds. A worker with file tools writes
+into a per-task jail; a worker with the **`cli` backend** hands the whole task to a real
+coding agent — the flagship config runs the full Claude Code harness against your own
+local model:
+
+```toml
+[backend]
+type = "cli"
+command = ["claude", "-p", "{prompt}", "--dangerously-skip-permissions"]
+[backend.env]
+ANTHROPIC_BASE_URL = "http://localhost:11434"   # Ollama v0.14+ speaks Anthropic
+```
+
+Deep agentic loop, zero API tokens, and everything it creates ships back through the
+hub:
+
+```
+> submit_task("build the landing page from DESIGN.md", assignee="carpenter")
+> wait_task("task_ab12cd")            # one call/min, returns early when done
+> task_files("task_ab12cd")           # index.html · css/styles.css
+> task_file("task_ab12cd", "index.html")   # pull it, write it into the repo
+```
+
+**See it in the subagent panel.** `farmteam install-skill` also installs the
+`farmteam-watcher` subagent: spawn it in the background after dispatching and the local
+task shows up in Claude Code's native panel like any subagent — it waits efficiently,
+pulls returned files into the project, and reports the result when the worker finishes.
+
 ## Isn't this what Agent Teams does?
 
 Complementary, not competing. Native subagents and teams are Claude-only, same billing,

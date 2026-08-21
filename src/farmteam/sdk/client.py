@@ -318,6 +318,21 @@ class AgentClient:
         )
         return data["task"]
 
+    async def upload_artifact(
+        self, name: str, content: bytes, mime: str = "application/octet-stream"
+    ) -> dict:
+        """Ship a produced file to the hub so the requester can pull it from anywhere."""
+        import base64
+
+        data = await self._request(
+            "POST",
+            "/artifacts",
+            json=self._as_me(
+                {"name": name, "mime": mime, "content_b64": base64.b64encode(content).decode()}
+            ),
+        )
+        return data["artifact"]
+
     async def get_task(self, task_id: str) -> dict:
         return await self._request("GET", f"/tasks/{task_id}")
 
