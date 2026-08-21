@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -13,11 +12,13 @@ from .store import Store
 
 
 def config_from_env() -> HubConfig:
+    from ..settings import env, home
+
     return HubConfig(
-        db_path=os.environ.get("CASCADIA_TASKS_DB", "~/.cascadia-tasks/hub.db"),
-        admin_token=os.environ.get("CASCADIA_TASKS_ADMIN_TOKEN"),
-        register_token=os.environ.get("CASCADIA_TASKS_REGISTER_TOKEN"),
-        default_identity=os.environ.get("CASCADIA_TASKS_IDENTITY", "claude:local"),
+        db_path=env("DB", str(home() / "hub.db")),
+        admin_token=env("ADMIN_TOKEN"),
+        register_token=env("REGISTER_TOKEN"),
+        default_identity=env("IDENTITY", "claude:local"),
     )
 
 
@@ -37,6 +38,6 @@ def build_hub(config: HubConfig | None = None) -> tuple[FastAPI, Store]:
 
 
 def app_factory() -> FastAPI:
-    """Entry point for `uvicorn cascadia_tasks.hub.app:app_factory --factory`."""
+    """Entry point for `uvicorn farmteam.hub.app:app_factory --factory`."""
     app, _ = build_hub()
     return app

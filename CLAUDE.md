@@ -1,4 +1,4 @@
-# cascadia-tasks — working agreement
+# farmteam — working agreement
 
 ## Commits (mandatory)
 
@@ -19,11 +19,11 @@
 Read [SPEC.md](SPEC.md) before changing behavior — it is the contract. Three parts of
 one package:
 
-- `src/cascadia_tasks/hub/` — the hub: SQLite store, REST + SSE agent API, FastMCP tool
-  surface for Claude Code. Single process, runs on the Mac Mini.
-- `src/cascadia_tasks/sdk/` — client library. **This is the protocol contract**; anything
+- `src/farmteam/hub/` — the hub: SQLite store, REST + SSE agent API, FastMCP tool
+  surface for Claude Code. Single process, runs on the hub box.
+- `src/farmteam/sdk/` — client library. **This is the protocol contract**; anything
   embedding it becomes a first-class agent. Keep it dependency-light (httpx only).
-- `src/cascadia_tasks/agent/` — reference harness daemon + model backends.
+- `src/farmteam/agent/` — reference harness daemon + model backends.
 
 ## Conventions
 
@@ -36,7 +36,7 @@ one package:
   seconds (`float`). Agents never write times.
 - Errors cross the wire as JSON `{"error": {"code": "...", "message": "..."}}` with a
   stable machine-readable `code`.
-- No secrets in the repo. Tokens come from the environment or `~/.cascadia-tasks/`.
+- No secrets in the repo. Tokens come from the environment or `~/.farmteam/`.
 
 ## Guardrails
 

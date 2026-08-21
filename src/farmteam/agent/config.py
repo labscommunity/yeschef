@@ -9,10 +9,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..models import ReplyWhen
+from ..settings import env as _settings_env
 from ..tools.executor import ToolsConfig
 
 DEFAULT_SYSTEM_PROMPT = (
-    "You are {name}, an agent on the Cascadia fleet running on node {node}. You collaborate "
+    "You are {name}, an agent on the farm team running on node {node}. You collaborate "
     "with Claude Code and with other local agents through a shared hub. Be direct and "
     "concrete. When you are given a task, do the work and report the result; when you are in "
     "a conversation, reply with substance and stop when the goal is met."
@@ -55,8 +56,7 @@ class AgentConfig:
             hub=raw.get("hub", "http://localhost:8787"),
             node=node,
             tags=list(raw.get("tags") or []),
-            register_token=raw.get("register_token")
-            or os.environ.get("CASCADIA_TASKS_REGISTER_TOKEN"),
+            register_token=raw.get("register_token") or _settings_env("REGISTER_TOKEN"),
             backend=backend,
             system_prompt=persona.get("system_prompt") or DEFAULT_SYSTEM_PROMPT,
             reply_when=ReplyWhen(persona.get("reply_when", ReplyWhen.MENTIONED)),

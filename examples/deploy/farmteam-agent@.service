@@ -1,21 +1,21 @@
 # Worker agent service, templated on the config name.
 #
-#   sudo cp examples/deploy/cascadia-agent@.service /etc/systemd/system/
-#   sudo systemctl enable --now cascadia-agent@miner-vllm
+#   sudo cp examples/deploy/farmteam-agent@.service /etc/systemd/system/
+#   sudo systemctl enable --now farmteam-agent@miner-vllm
 #
-# The instance name must match a config at /etc/cascadia-tasks/<name>.toml.
+# The instance name must match a config at /etc/farmteam/<name>.toml.
 
 [Unit]
-Description=cascadia-tasks agent (%i)
+Description=farmteam agent (%i)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=tate
-WorkingDirectory=/opt/cascadia-tasks
-ExecStart=/usr/local/bin/uv run --directory /opt/cascadia-tasks \
-    cascadia-tasks agent run -c /etc/cascadia-tasks/%i.toml
+User=YOU
+WorkingDirectory=/opt/farmteam
+ExecStart=/usr/local/bin/uv run --directory /opt/farmteam \
+    farmteam agent run -c /etc/farmteam/%i.toml
 Restart=always
 RestartSec=5
 
@@ -27,7 +27,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/tate/agent-scratch
+ReadWritePaths=/home/YOU/agent-scratch
 
 [Install]
 WantedBy=multi-user.target

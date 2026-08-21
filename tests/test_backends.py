@@ -7,10 +7,10 @@ import json
 import httpx
 import pytest
 
-from cascadia_tasks.agent.backends import build_backend
-from cascadia_tasks.agent.backends.anthropic_compat import AnthropicCompatBackend
-from cascadia_tasks.agent.backends.base import ToolCall, ToolResult, Turn
-from cascadia_tasks.agent.backends.openai_compat import OpenAICompatBackend
+from farmteam.agent.backends import build_backend
+from farmteam.agent.backends.anthropic_compat import AnthropicCompatBackend
+from farmteam.agent.backends.base import ToolCall, ToolResult, Turn
+from farmteam.agent.backends.openai_compat import OpenAICompatBackend
 
 TOOL_SPECS = [
     {

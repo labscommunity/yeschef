@@ -10,10 +10,10 @@ import httpx
 import pytest
 from asgi_lifespan import LifespanManager
 
-from cascadia_tasks.hub import HubConfig, Store, create_app
-from cascadia_tasks.hub.events import EventBus
-from cascadia_tasks.models import AgentKind, TaskState
-from cascadia_tasks.sdk import AgentClient
+from farmteam.hub import HubConfig, Store, create_app
+from farmteam.hub.events import EventBus
+from farmteam.models import AgentKind, TaskState
+from farmteam.sdk import AgentClient
 
 from .live import live_hub
 

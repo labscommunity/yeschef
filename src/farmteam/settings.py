@@ -1,4 +1,4 @@
-"""Local settings shared by every ``cascadia-tasks`` command on a machine.
+"""Local settings shared by every ``farmteam`` command on a machine.
 
 `up` and `join` write this file; every other command reads it, so the common case is
 zero flags. Environment variables still win when set, for scripts and overrides.
@@ -16,8 +16,24 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 
+def env(name: str, default: str | None = None) -> str | None:
+    """FARMTEAM_* first; CASCADIA_TASKS_* still honored for pre-rename deployments."""
+    value = os.environ.get(f"FARMTEAM_{name}")
+    if value is not None:
+        return value
+    return os.environ.get(f"CASCADIA_TASKS_{name}", default)
+
+
 def home() -> Path:
-    return Path(os.environ.get("CASCADIA_TASKS_HOME", "~/.cascadia-tasks")).expanduser()
+    override = env("HOME")
+    if override:
+        return Path(override).expanduser()
+    new = Path("~/.farmteam").expanduser()
+    legacy = Path("~/.cascadia-tasks").expanduser()
+    # A machine set up before the rename keeps working without migration.
+    if not new.exists() and legacy.exists():
+        return legacy
+    return new
 
 
 def config_path() -> Path:
@@ -36,9 +52,9 @@ class Settings:
 
     def merged_with_env(self) -> Settings:
         return Settings(
-            hub_url=os.environ.get("CASCADIA_TASKS_HUB", self.hub_url),
-            admin_token=os.environ.get("CASCADIA_TASKS_ADMIN_TOKEN", self.admin_token),
-            register_token=os.environ.get("CASCADIA_TASKS_REGISTER_TOKEN", self.register_token),
+            hub_url=env("HUB", self.hub_url) or self.hub_url,
+            admin_token=env("ADMIN_TOKEN", self.admin_token),
+            register_token=env("REGISTER_TOKEN", self.register_token),
             advertise_url=self.advertise_url,
         )
 

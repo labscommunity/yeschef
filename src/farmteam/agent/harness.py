@@ -17,7 +17,7 @@ from .backends import Turn, build_backend
 from .backends.base import Backend, ToolResult
 from .config import AgentConfig
 
-log = logging.getLogger("cascadia_tasks.agent")
+log = logging.getLogger("farmteam.agent")
 
 HEARTBEAT_INTERVAL_S = 10.0
 MAX_TRACKED_ROOMS = 256

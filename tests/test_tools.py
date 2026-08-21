@@ -6,8 +6,8 @@ import os
 
 import pytest
 
-from cascadia_tasks.agent.backends.base import ToolCall
-from cascadia_tasks.tools.executor import ToolExecutor, ToolsConfig
+from farmteam.agent.backends.base import ToolCall
+from farmteam.tools.executor import ToolExecutor, ToolsConfig
 
 posix_shell = pytest.mark.skipif(os.name == "nt", reason="executes a POSIX shell command")
 

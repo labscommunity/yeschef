@@ -1,8 +1,8 @@
 ---
-name: cascadia-tasks
+name: farmteam
 description: >-
-  Offload work to local AI agents on the Cascadia fleet and hold multi-turn
-  conversations with them, through the cascadia-tasks MCP server. Use when a task is
+  Offload work to your farm team of local AI agents and hold multi-turn
+  conversations with them, through the farmteam MCP server. Use when a task is
   bulk, parallelizable, cheap, or privacy-sensitive enough to run on a local model
   instead of spending the main model's context — summarizing or classifying many items,
   draft generation, log triage, or running something long in the background and checking
@@ -10,9 +10,9 @@ description: >-
   status of work already dispatched.
 ---
 
-# Using the Cascadia fleet
+# Using your farm team
 
-The `cascadia-tasks` MCP server connects this session to local AI agents running on the
+The `farmteam` MCP server connects this session to local AI agents running on the
 user's own hardware. You dispatch work to them and converse with them; they run on local
 models (Ollama, vLLM, and similar) and cost no Anthropic tokens.
 
@@ -43,7 +43,7 @@ list_agents()                      # see who's available and what tags they carr
 submit_task(
   title="triage errors",
   spec="Read the pasted log and list every distinct error with a count.",
-  assignee="nuc-alpha")            # or selector="tier:fast" to reach any fast agent
+  assignee="fastball")            # or selector="tier:fast" to reach any fast agent
 → {task_id: "task_ab12cd"}
 task_status("task_ab12cd")         # queued → working → completed
 task_result("task_ab12cd")         # the answer, once ready

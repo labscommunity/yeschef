@@ -1,11 +1,11 @@
-# cascadia-tasks — v1 Design Spec
+# farmteam — v1 Design Spec
 
 **Status:** draft for review · 2026-08-20
 **Owner:** t8
-**Repo:** `labscommunity/cascadia-tasks` (private)
+**Repo:** `labscommunity/farmteam` (private)
 
 A communication and task-orchestration layer between Claude Code and local AI agents
-running on the Rainier fleet. Claude Code stays on the Anthropic API; local agents are
+running on your own machines. Claude Code stays on the Anthropic API; local agents are
 independent processes running against local model backends (Ollama, Tahoma, vLLM, any
 OpenAI-compatible endpoint). The hub gives both sides a shared fabric for:
 
@@ -34,23 +34,23 @@ OpenAI-compatible endpoint). The hub gives both sides a shared fabric for:
 ## 2. Components (one repo, one Python package)
 
 ```
-cascadia-tasks/
-├── src/cascadia_tasks/
+farmteam/
+├── src/farmteam/
 │   ├── hub/          # FastMCP server + agent-facing HTTP/SSE API + SQLite store
 │   ├── sdk/          # Python client library — THE protocol contract
 │   ├── agent/        # reference harness daemon (uses sdk/)
 │   │   └── backends/ # anthropic_compat, openai_compat, tahoma
 │   ├── tools/        # opt-in worker-side tool executor (shell, file, web_fetch)
-│   └── cli.py        # `cascadia-tasks` command
+│   └── cli.py        # `farmteam` command
 ├── SPEC.md
 └── README.md
 ```
 
-- **Hub** — single process on the Mac Mini. One ASGI app serving two faces:
+- **Hub** — single process on the orchestrator box. One ASGI app serving two faces:
   - `/mcp` — FastMCP HTTP transport, for Claude Code sessions.
   - `/api/v1` — REST + SSE, for agents (harness daemons or anything embedding the SDK).
   - State in SQLite (WAL mode). No other infrastructure.
-- **SDK** — `cascadia_tasks.sdk.AgentClient`: register, stream events, send messages,
+- **SDK** — `farmteam.sdk.AgentClient`: register, stream events, send messages,
   claim/update tasks. This is the contract; Tahoma (or anything else) can embed it to
   become a first-class agent without running the harness.
 - **Harness** — reference agent runtime: config file in, named room-participating,
@@ -177,8 +177,8 @@ the durable store; nothing is session-scoped).
 - `POST /tasks` — agents may submit tasks (enables agent→agent delegation)
 
 Auth: per-agent bearer token issued at registration + a hub admin token for the MCP
-face and CLI. LAN/Tailscale only — **the hub must never be exposed via funnel** (the
-miner currently funnels ports for the Thunderbolt demo; keep the hub off those paths).
+face and CLI. LAN/Tailscale only — **the hub must never be exposed via a public
+funnel or port-forward**: anything that reaches it can dispatch work to every node.
 
 Enforcement rules settled during implementation:
 
@@ -205,7 +205,7 @@ base_url = "http://localhost:8000/v1"
 model = "qwen3-8b"
 max_context_tokens = 32768
 [persona]
-system_prompt = "You are miner-qwen, a fast reasoning agent on the Rainier cluster…"
+system_prompt = "You are miner-qwen, a fast reasoning agent on this fleet…"
 reply_when = "mentioned"          # mentioned | round_robin | always
 [tools]                           # omit section entirely for chat-only (default)
 allow = ["shell", "file_read"]
@@ -242,13 +242,13 @@ Behavior:
   no unbounded agent↔agent loop by construction.
 - Clocks: hub timestamps everything; agents never write times.
 
-## 8. Deployment on Rainier
+## 8. Reference deployment (a 3-node example)
 
-- **Hub:** Mac Mini, launchd service, port 8787.
-- **Workers:** NUCs alpha/beta/charlie — harness + Ollama; miner — harness + vLLM
+- **Hub:** the always-on box (a Mac mini works well), launchd/systemd service, port 8787.
+- **Workers:** three mini-PCs — harness + Ollama; one GPU box — harness + vLLM
   (existing models only; root disk at 98%); Tahoma nodes via SDK or `tahoma` backend.
 - **Claude Code (any machine):**
-  `claude mcp add --transport http cascadia-tasks http://mini.local:8787/mcp`
+  `claude mcp add --transport http farmteam http://mini.local:8787/mcp`
 
 ## 9. Milestones
 

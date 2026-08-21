@@ -1023,6 +1023,42 @@ class Store:
             finished_at=row["finished_at"],
         )
 
+    # ----------------------------------------------------------------- stats
+
+    def lifetime_stats(self) -> dict:
+        """What the farm team has done for you, computed from the durable record.
+
+        Derived on demand from tasks/rooms rather than kept as a counter, so it can
+        never drift from the truth and needs no migration.
+        """
+        with self._lock:
+            tasks_row = self._db.execute(
+                """SELECT COUNT(*) AS done,
+                          COALESCE(SUM(finished_at - claimed_at), 0) AS work_s
+                     FROM tasks WHERE state = ? AND claimed_at IS NOT NULL""",
+                (str(TaskState.COMPLETED),),
+            ).fetchone()
+            token_row = self._db.execute(
+                "SELECT COALESCE(SUM(total_tokens), 0) AS tokens, "
+                "COALESCE(SUM(message_count), 0) AS messages FROM rooms"
+            ).fetchone()
+        return {
+            "tasks_completed": tasks_row["done"],
+            "work_seconds": round(tasks_row["work_s"], 1),
+            "local_tokens": token_row["tokens"],
+            "messages": token_row["messages"],
+        }
+
+    @staticmethod
+    def format_stats(stats: dict) -> str:
+        """One compact human line, e.g. for tool-response footers."""
+        hours = stats["work_seconds"] / 3600.0
+        clock = f"{hours:.1f}h" if hours >= 1 else f"{stats['work_seconds'] / 60.0:.0f}m"
+        return (
+            f"farm team lifetime: {stats['tasks_completed']} tasks · "
+            f"~{stats['local_tokens']:,} tokens kept local · {clock} of work on your hardware"
+        )
+
     # --------------------------------------------------------------- janitor
 
     def sweep(self) -> dict[str, int]:

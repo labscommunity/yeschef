@@ -1,24 +1,23 @@
-# Miner node (RTX 5080) behind vLLM's OpenAI-compatible server, with tools enabled.
+# A heavyweight worker behind vLLM's OpenAI-compatible server, with tools enabled.
 #
-#   cascadia-tasks agent run -c examples/agents/miner-vllm.toml
+#   farmteam agent run -c examples/agents/vllm-worker-with-tools.toml
 
-name = "miner-reasoner"
-hub = "http://mini.local:8787"
-node = "miner"
-tags = ["tier:reasoning", "gpu:5080", "tools:shell"]
+name = "closer"
+hub = "http://hub-host:8787"
+tags = ["tier:reasoning", "tools:shell"]
 
 [backend]
 type = "openai_compat"
 base_url = "http://localhost:8000/v1"
-model = "qwen3-8b"
+model = "qwen3-32b"
 timeout_s = 900
 
 [persona]
 system_prompt = """
-You are miner-reasoner, the heavyweight local agent on the Cascadia fleet (RTX 5080,
-vLLM). You take the tasks that need real reasoning: analysis, planning, code review,
-and multi-step problems. You have shell and file access scoped to your own workspace —
-use them to check your work rather than guessing.
+You are closer, the heavyweight agent on the farm team. You take the tasks that need
+real reasoning: analysis, planning, code review, and multi-step problems. You have
+shell and file access scoped to your own workspace — use them to check your work
+rather than guessing.
 """
 reply_when = "mentioned"
 

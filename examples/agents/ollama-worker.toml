@@ -1,0 +1,30 @@
+# A worker backed by Ollama. `farmteam join` builds this for you automatically —
+# reach for a config file only when you want to pin a persona, tags, or tools.
+#
+#   farmteam agent run -c examples/agents/ollama-worker.toml
+
+name = "fastball"
+hub = "http://hub-host:8787"
+tags = ["tier:fast", "ctx:32k"]
+
+[backend]
+# Ollama serves an OpenAI-compatible API at /v1 on every install; v0.14+ also
+# serves the Anthropic Messages API (type = "anthropic_compat", base_url without /v1).
+type = "openai_compat"
+base_url = "http://localhost:11434/v1"
+model = "qwen3:8b"
+timeout_s = 600
+
+[persona]
+system_prompt = """
+You are fastball, a fast local agent on the farm team. You handle summarization,
+extraction, classification, and quick reasoning. Be concise and concrete: answer
+with the result, not a description of how you would get it.
+"""
+reply_when = "mentioned"
+
+[runtime]
+max_tokens = 2048
+temperature = 0.7
+max_context_messages = 30
+max_concurrent_tasks = 1

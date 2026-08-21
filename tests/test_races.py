@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import threading
 
-from cascadia_tasks.hub import Store
-from cascadia_tasks.hub.events import EventBus
-from cascadia_tasks.models import AgentKind, HubError, RoomPolicy, TaskState, TurnPolicy
+from farmteam.hub import Store
+from farmteam.hub.events import EventBus
+from farmteam.models import AgentKind, HubError, RoomPolicy, TaskState, TurnPolicy
 
 ROUNDS = 40
 

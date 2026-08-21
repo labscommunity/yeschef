@@ -12,9 +12,9 @@ import httpx
 import pytest
 from fastmcp import Client
 
-from cascadia_tasks.hub import HubConfig, Store
-from cascadia_tasks.hub.mcp_server import build_mcp
-from cascadia_tasks.models import (
+from farmteam.hub import HubConfig, Store
+from farmteam.hub.mcp_server import build_mcp
+from farmteam.models import (
     DEFAULT_MAX_ROOM_MESSAGES,
     AgentKind,
     HubError,
@@ -238,7 +238,7 @@ async def test_open_mode_still_works_with_no_tokens_configured() -> None:
 
 def test_the_sweep_hands_on_a_floor_its_holder_cannot_use(fleet: Store) -> None:
     """A dropped grant or a dead agent must not freeze a dialogue until idle timeout."""
-    from cascadia_tasks.models import TurnPolicy
+    from farmteam.models import TurnPolicy
 
     room = fleet.create_room(
         "dialogue",
@@ -259,7 +259,7 @@ def test_the_sweep_hands_on_a_floor_its_holder_cannot_use(fleet: Store) -> None:
 
 def test_an_unseeded_ring_still_enforces_turns(fleet: Store) -> None:
     """A room built before its agents registered must not skip floor control."""
-    from cascadia_tasks.models import TurnPolicy
+    from farmteam.models import TurnPolicy
 
     room = fleet.create_room(
         "dialogue",
@@ -279,7 +279,7 @@ def test_an_unseeded_ring_still_enforces_turns(fleet: Store) -> None:
 
 
 def test_yield_floor_passes_the_turn_without_speaking(fleet: Store) -> None:
-    from cascadia_tasks.models import TurnPolicy
+    from farmteam.models import TurnPolicy
 
     room = fleet.create_room(
         "dialogue",

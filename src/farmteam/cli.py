@@ -1,12 +1,12 @@
-"""``cascadia-tasks`` — set up a hub, bring a worker online, and drive the fleet.
+"""``farmteam`` — set up a hub, bring a worker online, and drive the fleet.
 
 Onboarding is meant to be two commands total:
 
     # on the hub machine (where Claude Code runs)
-    cascadia-tasks up
+    farmteam up
 
     # on each worker (auto-detects the local model)
-    cascadia-tasks join --hub http://<hub> --token <printed by up>
+    farmteam join --hub http://<hub> --token <printed by up>
 
 Everything else (submit, ask, watch, agents, tasks) talks to the hub over the same MCP
 endpoint Claude Code uses, so the user's CLI needs no token of its own.
@@ -23,6 +23,7 @@ import shutil
 import socket
 import subprocess
 import time
+from pathlib import Path
 
 import httpx
 import typer
@@ -85,7 +86,7 @@ def _mcp(tool: str, arguments: dict, *, identity: str | None = None, hub: str | 
         console.print(
             f"[red]could not reach the hub[/red] at {_hub_url(hub)} — {type(exc).__name__}: {exc}"
         )
-        console.print("Is it running? Start one with [cyan]cascadia-tasks up[/cyan].")
+        console.print("Is it running? Start one with [cyan]farmteam up[/cyan].")
         raise typer.Exit(1) from exc
 
 
@@ -96,7 +97,7 @@ def _wire_claude_code(mcp_url: str) -> None:
     if shutil.which("claude") is None:
         console.print(
             "[yellow]note:[/yellow] the `claude` CLI is not on PATH, so I did not wire it up. "
-            f"Add it yourself with:\n  [cyan]claude mcp add --transport http cascadia-tasks "
+            f"Add it yourself with:\n  [cyan]claude mcp add --transport http farmteam "
             f"{mcp_url}[/cyan]"
         )
         return
@@ -109,7 +110,7 @@ def _wire_claude_code(mcp_url: str) -> None:
             "user",
             "--transport",
             "http",
-            "cascadia-tasks",
+            "farmteam",
             mcp_url,
         ],
         capture_output=True,
@@ -117,30 +118,28 @@ def _wire_claude_code(mcp_url: str) -> None:
     )
     if result.returncode == 0:
         console.print(
-            "[green]✓[/green] wired into Claude Code (user scope) as [bold]cascadia-tasks[/bold]"
+            "[green]✓[/green] wired into Claude Code (user scope) as [bold]farmteam[/bold]"
         )
     elif "already exists" in (result.stderr + result.stdout).lower():
-        console.print(
-            "[green]✓[/green] already wired into Claude Code as [bold]cascadia-tasks[/bold]"
-        )
+        console.print("[green]✓[/green] already wired into Claude Code as [bold]farmteam[/bold]")
     else:
         console.print(
             "[yellow]note:[/yellow] could not wire Claude Code automatically. Run:\n"
-            f"  [cyan]claude mcp add --transport http cascadia-tasks {mcp_url}[/cyan]"
+            f"  [cyan]claude mcp add --transport http farmteam {mcp_url}[/cyan]"
         )
 
 
 def _serve_hub(host: str, port: int, db: str, cfg: settings.Settings) -> None:
     import uvicorn
 
-    os.environ["CASCADIA_TASKS_DB"] = db
+    os.environ["FARMTEAM_DB"] = db
     if cfg.admin_token:
-        os.environ.setdefault("CASCADIA_TASKS_ADMIN_TOKEN", cfg.admin_token)
+        os.environ.setdefault("FARMTEAM_ADMIN_TOKEN", cfg.admin_token)
     if cfg.register_token:
-        os.environ.setdefault("CASCADIA_TASKS_REGISTER_TOKEN", cfg.register_token)
+        os.environ.setdefault("FARMTEAM_REGISTER_TOKEN", cfg.register_token)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     uvicorn.run(
-        "cascadia_tasks.hub.app:app_factory",
+        "farmteam.hub.app:app_factory",
         host=host,
         port=port,
         factory=True,
@@ -160,7 +159,7 @@ def up(
         False, "--open", help="Skip token generation — anyone on the network can drive the hub."
     ),
     no_wire: bool = typer.Option(False, "--no-wire", help="Do not touch the Claude Code config."),
-    db: str = typer.Option("~/.cascadia-tasks/hub.db", help="SQLite path."),
+    db: str = typer.Option("~/.farmteam/hub.db", help="SQLite path."),
 ) -> None:
     """Start the hub, wire it into Claude Code, and print the worker join command."""
     cfg = settings.load()
@@ -178,7 +177,7 @@ def up(
     if not no_wire:
         _wire_claude_code(mcp_url)
 
-    join = f"cascadia-tasks join --hub {cfg.advertise_url}"
+    join = f"farmteam join --hub {cfg.advertise_url}"
     if cfg.register_token:
         join += f" --token {cfg.register_token}"
     console.print(
@@ -186,9 +185,9 @@ def up(
             f"[bold]Run this on each worker node[/bold] (auto-detects the local model):\n\n"
             f"  [cyan]{join}[/cyan]\n\n"
             f"On a Tailnet, swap the host for the machine's MagicDNS name.\n"
-            f"Talk to the fleet from here with [cyan]cascadia-tasks ask[/cyan] / "
+            f"Talk to the fleet from here with [cyan]farmteam ask[/cyan] / "
             f"[cyan]submit[/cyan] / [cyan]agents[/cyan].",
-            title="cascadia-tasks is up",
+            title="farmteam is up",
             border_style="green",
         )
     )
@@ -213,7 +212,7 @@ def up(
         _wait_healthy(cfg.hub_url)
         console.print(
             f"[green]✓[/green] hub running in the background (pid {proc.pid}), logging to "
-            f"{proc.log}\n  stop it with [cyan]cascadia-tasks down[/cyan]."
+            f"{proc.log}\n  stop it with [cyan]farmteam down[/cyan]."
         )
         return
 
@@ -314,7 +313,7 @@ def join(
         tags.append(f"tier:{tier}")
     tags.append(f"node:{name}")
 
-    # Remember hub + token so a plain `cascadia-tasks join` works next time, and so
+    # Remember hub + token so a plain `farmteam join` works next time, and so
     # `ask`/`agents`/etc. on this box point at the right hub.
     cfg.hub_url = hub
     if token:
@@ -351,7 +350,7 @@ def join(
         proc = procs.spawn(f"agent-{name}", "agent", command)
         console.print(
             f"[green]✓[/green] [bold]{name}[/bold] running in the background (pid {proc.pid}), "
-            f"logging to {proc.log}\n  stop it with [cyan]cascadia-tasks down[/cyan]."
+            f"logging to {proc.log}\n  stop it with [cyan]farmteam down[/cyan]."
         )
         return
 
@@ -381,7 +380,7 @@ def _run_worker(agent_config: AgentConfig, verbose: bool) -> None:
 def doctor() -> None:
     """Diagnose a setup: config, hub reachability, and local model servers."""
     cfg = settings.load()
-    console.print("[bold]cascadia-tasks doctor[/bold]\n")
+    console.print("[bold]farmteam doctor[/bold]\n")
 
     ok = "[green]✓[/green]"
     bad = "[red]✗[/red]"
@@ -390,7 +389,7 @@ def doctor() -> None:
         console.print(f"{ok} config at {settings.config_path()}")
     else:
         console.print(
-            f"{bad} no config yet — run [cyan]cascadia-tasks up[/cyan] (hub) or "
+            f"{bad} no config yet — run [cyan]farmteam up[/cyan] (hub) or "
             f"[cyan]join[/cyan] (worker)"
         )
     console.print(f"    hub_url: {cfg.hub_url}")
@@ -419,12 +418,12 @@ def doctor() -> None:
 
     if shutil.which("claude"):
         listed = subprocess.run(["claude", "mcp", "list"], capture_output=True, text=True)
-        if "cascadia-tasks" in (listed.stdout + listed.stderr):
-            console.print(f"{ok} Claude Code is wired to cascadia-tasks")
+        if "farmteam" in (listed.stdout + listed.stderr):
+            console.print(f"{ok} Claude Code is wired to farmteam")
         else:
             console.print(
                 "[dim]•[/dim] Claude Code present but not wired — run "
-                "[cyan]cascadia-tasks up[/cyan] or add it manually"
+                "[cyan]farmteam up[/cyan] or add it manually"
             )
     else:
         console.print(
@@ -475,7 +474,7 @@ def submit(
         f"[green]dispatched[/green] [bold]{data['task_id']}[/bold] → "
         f"{data['task']['assignee'] or data['task']['selector']}"
     )
-    console.print(f"  check it: [cyan]cascadia-tasks task {data['task_id']}[/cyan]")
+    console.print(f"  check it: [cyan]farmteam task {data['task_id']}[/cyan]")
 
 
 @app.command("result")
@@ -499,7 +498,7 @@ def send(agent: str, message: str, hub: str = typer.Option(None)) -> None:
         "send_message", {"to": agent, "message": message}, identity=OPERATOR_IDENTITY, hub=hub
     )
     console.print(f"[green]sent[/green] to {agent} (room {data['room_id']})")
-    console.print(f"  read the reply: [cyan]cascadia-tasks watch {data['room_id']}[/cyan]")
+    console.print(f"  read the reply: [cyan]farmteam watch {data['room_id']}[/cyan]")
 
 
 @app.command("ask")
@@ -553,6 +552,9 @@ def dialogue(
     max_messages: int = typer.Option(20, help="Cap before the room auto-closes."),
     stop_phrase: str = typer.Option(None, help="Archive the room when an agent says this."),
     watch: bool = typer.Option(True, help="Follow the conversation live after starting it."),
+    record: str = typer.Option(
+        None, "--record", help="Save the finished transcript to this JSON file (for `replay`)."
+    ),
     hub: str = typer.Option(None),
 ) -> None:
     """Have two or more local agents converse autonomously toward a goal."""
@@ -562,16 +564,22 @@ def dialogue(
     data = _mcp("start_dialogue", args, identity=OPERATOR_IDENTITY, hub=hub)
     room_id = data["room_id"]
     console.print(f"[green]started[/green] dialogue in room [bold]{room_id}[/bold]")
-    if watch:
-        _follow_room(room_id, hub)
+    if watch or record:
+        _follow_room(room_id, hub, record=record)
     else:
-        console.print(f"  watch it: [cyan]cascadia-tasks watch {room_id}[/cyan]")
+        console.print(f"  watch it: [cyan]farmteam watch {room_id}[/cyan]")
 
 
 @app.command("watch")
-def watch(room_id: str, hub: str = typer.Option(None)) -> None:
+def watch(
+    room_id: str,
+    record: str = typer.Option(
+        None, "--record", help="Save the transcript to this JSON file when the room closes."
+    ),
+    hub: str = typer.Option(None),
+) -> None:
     """Follow a room's conversation live."""
-    _follow_room(room_id, hub)
+    _follow_room(room_id, hub, record=record)
 
 
 @app.command("tail", hidden=True)
@@ -580,9 +588,10 @@ def tail(room_id: str, hub: str = typer.Option(None)) -> None:
     _follow_room(room_id, hub)
 
 
-def _follow_room(room_id: str, hub: str | None) -> None:
+def _follow_room(room_id: str, hub: str | None, record: str | None = None) -> None:
     seen = 0
     console.print(f"[dim]following {room_id} — Ctrl-C to stop[/dim]")
+    closed = False
     try:
         while True:
             data = _mcp("room_transcript", {"room": room_id, "from_seq": seen}, hub=hub)
@@ -591,10 +600,70 @@ def _follow_room(room_id: str, hub: str | None) -> None:
                 console.print(f"[bold cyan]{message['sender']}[/bold cyan]: {message['body']}")
             if data["room"]["archived"]:
                 console.print(f"[dim]— room closed ({data['room']['archived_reason']})[/dim]")
+                closed = True
                 return
             time.sleep(2.0)
     except KeyboardInterrupt:
         console.print("\nstopped following")
+    finally:
+        if record:
+            _save_transcript(room_id, record, hub, complete=closed)
+
+
+def _save_transcript(room_id: str, path: str, hub: str | None, complete: bool) -> None:
+    from .replay import save_transcript, transcript_payload
+
+    transcript = _mcp("room_transcript", {"room": room_id, "from_seq": 0, "limit": 1000}, hub=hub)
+    fleet = _mcp("list_agents", {}, hub=hub)
+    payload = transcript_payload(transcript["room"], transcript["messages"], fleet["agents"])
+    target = save_transcript(path, payload)
+    note = "" if complete else " (room still open — partial transcript)"
+    console.print(f"[green]recorded[/green] {len(payload['messages'])} turns → {target}{note}")
+    console.print(f"  replay it: [cyan]farmteam replay {target}[/cyan]")
+
+
+@app.command("replay")
+def replay_cmd(
+    transcript: str = typer.Argument(..., help="A JSON transcript saved with --record."),
+    speed: float = typer.Option(1.0, help="Multiplier on the real inter-message gaps."),
+    tokens_per_sec: float = typer.Option(40.0, help="Streaming rate within a message."),
+    no_delay: bool = typer.Option(False, "--no-delay", help="Render instantly (sanity checks)."),
+) -> None:
+    """Re-stream a recorded conversation with realistic pacing.
+
+    Live model output is nondeterministic; a recorded transcript replays identically
+    every time, which is what screen-recorder pipelines (VHS, asciinema) need to render
+    a reproducible demo GIF from a real conversation.
+    """
+    import json as _json
+
+    from .replay import ReplayOptions, replay
+
+    payload = _json.loads(Path(transcript).expanduser().read_text())
+    replay(
+        payload,
+        console,
+        ReplayOptions(speed=speed, tokens_per_sec=tokens_per_sec, no_delay=no_delay),
+    )
+
+
+@app.command("stats")
+def stats(hub: str = typer.Option(None)) -> None:
+    """Show what the farm team has done for you, lifetime."""
+    try:
+        health = httpx.get(f"{_hub_url(hub)}/healthz", timeout=5.0).json()
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]hub unreachable[/red]: {exc}")
+        raise typer.Exit(1) from exc
+    lifetime = health.get("lifetime", {})
+    hours = lifetime.get("work_seconds", 0) / 3600.0
+    table = Table(show_header=False, box=None)
+    table.add_row("tasks completed", f"[bold]{lifetime.get('tasks_completed', 0)}[/bold]")
+    table.add_row("tokens kept local", f"[bold]{lifetime.get('local_tokens', 0):,}[/bold]")
+    table.add_row("messages exchanged", f"[bold]{lifetime.get('messages', 0):,}[/bold]")
+    table.add_row("work run on your hardware", f"[bold]{hours:.1f}h[/bold]")
+    table.add_row("fleet", f"{health.get('online', 0)}/{health.get('agents', 0)} agents online")
+    console.print(table)
 
 
 @app.command("tasks")
@@ -677,16 +746,16 @@ def install_skill(
     from importlib import resources
     from pathlib import Path
 
-    source = resources.files("cascadia_tasks.resources.skill")
+    source = resources.files("farmteam.resources.skill")
     target_root = (
         Path("~/.claude/skills").expanduser() if user else Path(project) / ".claude" / "skills"
     )
-    target = target_root / "cascadia-tasks"
+    target = target_root / "farmteam"
     target.mkdir(parents=True, exist_ok=True)
     for entry in source.iterdir():
         if entry.is_file() and not entry.name.startswith("__"):
             (target / entry.name).write_text(entry.read_text())
-    console.print(f"[green]✓[/green] installed the cascadia-tasks skill into {target}")
+    console.print(f"[green]✓[/green] installed the farmteam skill into {target}")
     console.print("  Claude Code will pick it up in that scope on its next run.")
 
 
@@ -697,11 +766,11 @@ def install_skill(
 def hub_serve(
     host: str = typer.Option("0.0.0.0"),
     port: int = typer.Option(8787),
-    db: str = typer.Option("~/.cascadia-tasks/hub.db"),
+    db: str = typer.Option("~/.farmteam/hub.db"),
 ) -> None:
     """Run the hub in the foreground (advanced; `up` wraps this with setup)."""
     cfg = settings.load()
-    console.print(f"[bold]cascadia-tasks hub[/bold] → http://{host}:{port}  (MCP at /mcp)")
+    console.print(f"[bold]farmteam hub[/bold] → http://{host}:{port}  (MCP at /mcp)")
     if not cfg.admin_token and not cfg.register_token:
         console.print("[yellow]open mode — no tokens set.[/yellow]")
     _serve_hub(host, port, db, cfg)
@@ -762,6 +831,15 @@ def _wait_healthy(hub_url: str, timeout: float = 15.0) -> bool:
 
 
 def main() -> None:
+    app()
+
+
+def legacy_main() -> None:
+    """Entry point for the deprecated `cascadia-tasks` command name."""
+    console.print(
+        "[yellow]note:[/yellow] `cascadia-tasks` is now [bold]farmteam[/bold] — "
+        "same tool, new name. This alias keeps working for now.\n"
+    )
     app()
 
 

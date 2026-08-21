@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
-import os
 
 from fastmcp import FastMCP
 
@@ -36,7 +35,9 @@ class IdentityResolver:
 
     def __init__(self, store: Store, default_identity: str) -> None:
         self.store = store
-        self.default = os.environ.get("CASCADIA_TASKS_IDENTITY", default_identity)
+        from ..settings import env
+
+        self.default = env("IDENTITY", default_identity) or default_identity
         self._by_session: dict[str, str] = {}
         self._cursors: dict[str, int] = {}
 
@@ -76,10 +77,11 @@ class IdentityResolver:
 
 def build_mcp(store: Store, config: HubConfig) -> FastMCP:
     mcp = FastMCP(
-        name="cascadia-tasks",
+        name="farmteam",
         instructions=(
-            "Dispatch tasks to local AI agents on the Cascadia fleet and hold multi-turn "
-            "conversations with them. submit_task returns immediately with a task id; call "
+            "Dispatch tasks to your farm team — local AI agents on your own hardware — and "
+            "hold multi-turn conversations with them. submit_task returns immediately with a "
+            "task id; call "
             "task_status(id) at any time, from any session, to check on it. Use send_message "
             "for a direct back-and-forth with one agent, create_room/post for group "
             "conversations, and start_dialogue to have two or more local agents converse "
@@ -365,13 +367,18 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
     def task_result(task_id: str) -> dict:
         """Fetch a finished task's result (or the reason it is not finished)."""
         task = store.require_task(task_id)
-        return {
+        payload = {
             "task_id": task.id,
             "state": str(task.state),
             "result": task.result,
             "error": task.error,
             "ready": task.state.terminal,
         }
+        if task.state.terminal:
+            # The payoff moment gets the running total — the houtini-style counter
+            # that keeps the value of the fleet visible without bloating every call.
+            payload["lifetime"] = store.format_stats(store.lifetime_stats())
+        return payload
 
     @mcp.tool
     @_guard

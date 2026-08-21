@@ -5,8 +5,8 @@ from collections.abc import AsyncIterator, Iterator
 
 import pytest
 
-from cascadia_tasks.hub import HubConfig, Store
-from cascadia_tasks.hub.events import EventBus
+from farmteam.hub import HubConfig, Store
+from farmteam.hub.events import EventBus
 
 
 @pytest.fixture

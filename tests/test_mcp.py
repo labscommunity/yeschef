@@ -7,10 +7,10 @@ from collections.abc import AsyncIterator
 import pytest
 from fastmcp import Client
 
-from cascadia_tasks.hub import HubConfig, Store
-from cascadia_tasks.hub.events import EventBus
-from cascadia_tasks.hub.mcp_server import build_mcp
-from cascadia_tasks.models import TaskState
+from farmteam.hub import HubConfig, Store
+from farmteam.hub.events import EventBus
+from farmteam.hub.mcp_server import build_mcp
+from farmteam.models import TaskState
 
 EXPECTED_TOOLS = {
     "set_identity",

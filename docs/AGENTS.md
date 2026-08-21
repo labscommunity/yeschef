@@ -1,16 +1,16 @@
-# Using cascadia-tasks from an agent
+# Using farmteam from an agent
 
 This is the reference for an AI agent (a Claude Code session, or any MCP client) that
 wants to use the fleet. For the short, always-loaded version, install the skill:
 
 ```bash
-cascadia-tasks install-skill            # into this project's .claude/skills/
-cascadia-tasks install-skill --user     # into ~/.claude/skills/ for every project
+farmteam install-skill            # into this project's .claude/skills/
+farmteam install-skill --user     # into ~/.claude/skills/ for every project
 ```
 
 ## What the fleet is
 
-A `cascadia-tasks` hub connects your session to **local AI agents** running on the user's
+A `farmteam` hub connects your session to **local AI agents** running on the user's
 own machines against local models. You dispatch work to them over MCP; they cost no
 Anthropic tokens. The hub is durable — a task you submit is checkable from any session at
 any later time.
@@ -40,7 +40,7 @@ tokens — local models are smaller.
 
 ## Targeting
 
-- `assignee="miner-reasoner"` — a specific agent.
+- `assignee="closer"` — a specific agent.
 - `selector="tier:reasoning"` — any agent carrying that tag; exactly one claims it.
 
 Tags are per-fleet. Run `list_agents()` to see what this deployment actually offers
@@ -58,7 +58,7 @@ polls.
 
 ```
 list_agents()
-# → nuc-alpha (tier:fast, online), miner-reasoner (tier:reasoning, online)
+# → fastball (tier:fast, online), closer (tier:reasoning, online)
 
 submit_task(
   title="classify feedback",
@@ -73,7 +73,7 @@ task_result("task_9f3k2p")   # → the labeled lines
 
 # Have two agents debate an approach, then read the outcome:
 start_dialogue(
-  ["nuc-alpha", "miner-reasoner"],
+  ["fastball", "closer"],
   goal="Propose and agree on a cache eviction policy for the gateway.",
   stop_phrase="AGREED")
 # → {room_id: "room_x7c2"}

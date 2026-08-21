@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from cascadia_tasks import settings
-from cascadia_tasks.agent.detect import DetectedBackend
+from farmteam import settings
+from farmteam.agent.detect import DetectedBackend
 
 
 @pytest.fixture

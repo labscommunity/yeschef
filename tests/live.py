@@ -15,8 +15,8 @@ from dataclasses import dataclass
 import httpx
 import uvicorn
 
-from cascadia_tasks.hub import HubConfig, Store, create_app
-from cascadia_tasks.hub.events import EventBus
+from farmteam.hub import HubConfig, Store, create_app
+from farmteam.hub.events import EventBus
 
 
 def free_port() -> int:
@@ -37,7 +37,7 @@ async def live_hub(with_mcp: bool = False, **config_kwargs) -> AsyncIterator[Liv
     config = HubConfig(db_path=":memory:", sweep_interval_s=3600.0, **config_kwargs)
     mcp_app = None
     if with_mcp:
-        from cascadia_tasks.hub.mcp_server import build_mcp
+        from farmteam.hub.mcp_server import build_mcp
 
         mcp_app = build_mcp(store, config).http_app(path="/")
     app = create_app(store, config, mcp_app=mcp_app)

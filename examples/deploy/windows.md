@@ -1,11 +1,11 @@
 # Running on Windows
 
-cascadia-tasks is pure Python and runs on Windows unchanged. The hub and workers behave
+farmteam is pure Python and runs on Windows unchanged. The hub and workers behave
 the same; only the "run it as a service" mechanics differ from launchd/systemd.
 
-For a quick start you don't need a service at all — `cascadia-tasks up --detach` (hub) and
-`cascadia-tasks join --detach` (worker) run in the background and are stopped with
-`cascadia-tasks down`. Use a real service only for machines that must come back after a
+For a quick start you don't need a service at all — `farmteam up --detach` (hub) and
+`farmteam join --detach` (worker) run in the background and are stopped with
+`farmteam down`. Use a real service only for machines that must come back after a
 reboot.
 
 ## Option A — NSSM (simplest persistent service)
@@ -14,15 +14,15 @@ reboot.
 
 ```powershell
 # hub, on the orchestrator
-nssm install cascadia-hub "C:\path\to\.venv\Scripts\cascadia-tasks.exe" hub serve --port 8787
-nssm set cascadia-hub AppEnvironmentExtra `
+nssm install farmteam-hub "C:\path\to\.venv\Scripts\farmteam.exe" hub serve --port 8787
+nssm set farmteam-hub AppEnvironmentExtra `
   CASCADIA_TASKS_ADMIN_TOKEN=<token> CASCADIA_TASKS_REGISTER_TOKEN=<token>
-nssm start cascadia-hub
+nssm start farmteam-hub
 
 # worker, on each node (Ollama/vLLM already running locally)
-nssm install cascadia-agent "C:\path\to\.venv\Scripts\cascadia-tasks.exe" `
+nssm install farmteam-agent "C:\path\to\.venv\Scripts\farmteam.exe" `
   join --hub http://<hub-host>:8787 --token <register-token>
-nssm start cascadia-agent
+nssm start farmteam-agent
 ```
 
 ## Option B — Task Scheduler (no extra software)
@@ -30,10 +30,10 @@ nssm start cascadia-agent
 Create a task that runs at startup:
 
 ```powershell
-$action  = New-ScheduledTaskAction -Execute "C:\path\to\.venv\Scripts\cascadia-tasks.exe" `
+$action  = New-ScheduledTaskAction -Execute "C:\path\to\.venv\Scripts\farmteam.exe" `
                                     -Argument "join --hub http://<hub-host>:8787 --token <token>"
 $trigger = New-ScheduledTaskTrigger -AtStartup
-Register-ScheduledTask -TaskName "cascadia-agent" -Action $action -Trigger $trigger `
+Register-ScheduledTask -TaskName "farmteam-agent" -Action $action -Trigger $trigger `
                        -RunLevel Highest -User "SYSTEM"
 ```
 

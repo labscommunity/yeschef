@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from cascadia_tasks.hub import Store
-from cascadia_tasks.models import AgentKind, HubError, RoomPolicy, TurnPolicy
+from farmteam.hub import Store
+from farmteam.models import AgentKind, HubError, RoomPolicy, TurnPolicy
 
 
 @pytest.fixture

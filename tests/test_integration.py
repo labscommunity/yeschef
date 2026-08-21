@@ -13,12 +13,12 @@ from collections.abc import AsyncIterator
 import pytest
 from fastmcp import Client
 
-from cascadia_tasks.agent import AgentConfig, Harness
-from cascadia_tasks.agent.backends.base import Turn
-from cascadia_tasks.hub import HubConfig
-from cascadia_tasks.hub.mcp_server import build_mcp
-from cascadia_tasks.models import ReplyWhen
-from cascadia_tasks.tools.executor import ToolsConfig
+from farmteam.agent import AgentConfig, Harness
+from farmteam.agent.backends.base import Turn
+from farmteam.hub import HubConfig
+from farmteam.hub.mcp_server import build_mcp
+from farmteam.models import ReplyWhen
+from farmteam.tools.executor import ToolsConfig
 
 from .live import LiveHub, live_hub
 from .mock_backend import MockBackend, tool_then_answer
@@ -453,7 +453,7 @@ async def test_agent_delegates_a_subtask_to_another_agent(fleet) -> None:
     hub, claude = fleet
     worker = await start_agent(hub, "worker", lambda s, t: "subtask done", tags=["tier:fast"])
     try:
-        from cascadia_tasks.sdk import AgentClient
+        from farmteam.sdk import AgentClient
 
         async with AgentClient(hub.url, "coordinator") as coordinator:
             await coordinator.register(tags=["tier:coordinator"])
