@@ -20,24 +20,61 @@ against Ollama, vLLM, Tahoma, or any OpenAI-compatible endpoint.
                              └─────────┘
 ```
 
-## Quickstart
+## Quickstart — two commands
 
 ```bash
-uv venv && uv pip install -e ".[dev]"
-
-# 1. Hub on the orchestrator (LAN/Tailscale only — never behind a funnel)
-export CASCADIA_TASKS_ADMIN_TOKEN=$(openssl rand -hex 24)
-export CASCADIA_TASKS_REGISTER_TOKEN=$(openssl rand -hex 24)
-uv run cascadia-tasks hub serve --host 0.0.0.0 --port 8787
-
-# 2. An agent on a worker node
-uv run cascadia-tasks agent run -c examples/agents/nuc-alpha.toml
-
-# 3. Point Claude Code at the hub, from any machine on the LAN
-claude mcp add --transport http cascadia-tasks http://mini.local:8787/mcp
+uv tool install cascadia-tasks          # or: uv pip install -e ".[dev]"
 ```
 
-Then, in Claude Code:
+**On the hub machine** (where you run Claude Code) — one command generates tokens,
+wires Claude Code, and prints the worker command:
+
+```bash
+cascadia-tasks up
+```
+
+**On each worker node** — one command auto-detects the local model, verifies it, and
+registers. Paste the line `up` printed:
+
+```bash
+cascadia-tasks join --hub http://mini.local:8787 --token <printed-by-up>
+```
+
+That's it. `up` already connected Claude Code, so a session can immediately
+`list_agents`, `submit_task`, and `start_dialogue`. Single-box demo? Run both in two
+terminals — on the same machine `join` needs no flags at all.
+
+Prefer the background? `cascadia-tasks up --detach` and `join --detach` return to the
+prompt; `cascadia-tasks down` stops them, `ps` lists them. Runs the same on macOS,
+Linux, and Windows (see [`examples/deploy/`](examples/deploy/) for persistent services).
+
+**Check it's healthy anytime:**
+
+```bash
+cascadia-tasks doctor        # config, hub reachability, detected model servers
+```
+
+### Drive it yourself, from the terminal
+
+```bash
+cascadia-tasks agents                              # who is on the fleet
+cascadia-tasks submit "summarize today's log" --to nuc-alpha
+cascadia-tasks task <task-id>                       # status + result, anytime
+cascadia-tasks ask nuc-alpha "what did you find?"   # send and wait for the reply
+cascadia-tasks dialogue nuc-alpha miner-reasoner --goal "pick a caching strategy"
+```
+
+### From Claude Code
+
+`up` wires the MCP server in automatically. To teach a session *when* to delegate,
+install the bundled skill:
+
+```bash
+cascadia-tasks install-skill          # into this project's .claude/skills/
+cascadia-tasks install-skill --user   # for every project
+```
+
+Then, in a session:
 
 ```
 > list_agents                                    # who is on the fleet
@@ -49,6 +86,22 @@ Then, in Claude Code:
   → room_a7c2k9                                  # agents converse on their own
 > room_transcript("room_a7c2k9")                 # watch it happen
 ```
+
+See [docs/AGENTS.md](docs/AGENTS.md) for the full agent-facing guide.
+
+## Runs anywhere
+
+Pure Python (3.11+), SQLite, and HTTP — no platform-specific code. The hub and workers
+run on macOS, Linux, and Windows. Two roles, different needs:
+
+- **The hub** does no inference — it's a bookkeeper. Happy on a Mac Mini, a Linux box, or
+  a Raspberry Pi. Moving it is a one-line change (`--advertise` / the workers' `--hub`).
+- **A worker** calls a model server over HTTP, so its requirements are whatever
+  Ollama / vLLM / Tahoma needs. A worker can even run on a different machine from the
+  model it drives.
+
+Windows workers: everything works; if you grant the `shell` tool, write allowlist
+patterns in `cmd.exe` syntax (see [`examples/deploy/windows.md`](examples/deploy/windows.md)).
 
 ## The two primitives
 
@@ -102,8 +155,11 @@ auto-background threshold.
 
 ## Agents
 
-An agent is a TOML file. See [`examples/agents/`](examples/agents/) for Ollama, vLLM,
-and Tahoma configs.
+`cascadia-tasks join` is the easy path — it auto-detects the model and needs no file.
+Reach for a **TOML config** only when you want to pin things `join` doesn't set: a custom
+persona, a specific backend adapter, or worker-side tools. Run one with
+`cascadia-tasks agent run -c <file>`. See [`examples/agents/`](examples/agents/) for
+Ollama, vLLM, and Tahoma configs.
 
 ```toml
 name = "nuc-alpha"
@@ -141,16 +197,18 @@ Tahoma itself join rooms and claim tasks.
 cascadia-tasks agents               # fleet status
 cascadia-tasks tasks --state working
 cascadia-tasks task task_hx8k2m9qp4 # detail plus event history
-cascadia-tasks rooms
-cascadia-tasks tail room_a7c2k9 -f  # follow a conversation
+cascadia-tasks result task_hx8k2m9qp4
+cascadia-tasks rooms                # conversations, including recently closed
+cascadia-tasks watch room_a7c2k9    # follow a conversation live
 cascadia-tasks cancel task_hx8k2m9qp4
+cascadia-tasks ps                   # background processes started here
 ```
 
 A background sweep reclaims tasks whose agent disappeared (requeue, then fail after two
-attempts), times out overruns, and archives idle rooms.
+attempts), times out overruns, archives idle rooms, and hands on a stuck dialogue floor.
 
-Deployment units for launchd (hub) and systemd (workers) are in
-[`examples/deploy/`](examples/deploy/).
+Persistent-service units are in [`examples/deploy/`](examples/deploy/): launchd (hub),
+systemd (workers), and [Windows](examples/deploy/windows.md) (NSSM / Task Scheduler).
 
 ## Security posture
 

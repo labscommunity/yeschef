@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import fnmatch
 import ipaddress
+import os
 import shlex
 import socket
 from dataclasses import dataclass, field
@@ -23,7 +24,12 @@ from ..models import ToolCall, ToolResult
 
 MAX_OUTPUT_CHARS = 20_000
 
-SHELL_METACHARACTERS = (";", "&&", "||", "|", "`", "$(", ">", "<", "\n", "&")
+_POSIX_METACHARACTERS = (";", "&&", "||", "|", "`", "$(", ">", "<", "\n", "&")
+# cmd.exe adds its own chaining and expansion characters; `create_subprocess_shell`
+# uses cmd on Windows, so a worker there must screen for these too.
+_WINDOWS_METACHARACTERS = _POSIX_METACHARACTERS + ("%", "^", "\r")
+
+SHELL_METACHARACTERS = _WINDOWS_METACHARACTERS if os.name == "nt" else _POSIX_METACHARACTERS
 """Anything that could chain or redirect a second command past the allowlist."""
 
 MAX_REDIRECTS = 3
@@ -206,7 +212,9 @@ class ToolExecutor:
         if not self.config.shell_allowlist:
             return False
         try:
-            shlex.split(command)
+            # Windows paths use backslashes that POSIX-mode shlex mangles; validate
+            # parseability in the mode that matches the shell we'll actually invoke.
+            shlex.split(command, posix=(os.name != "nt"))
         except ValueError:
             return False
 

@@ -307,6 +307,24 @@ async def test_multi_turn_conversation_with_a_local_agent(fleet) -> None:
         await stop_agent(harness, runner)
 
 
+async def test_agent_replies_to_a_direct_message_without_a_mention(fleet) -> None:
+    """A DM is addressed to the agent by definition, so `reply_when=mentioned` must
+    not suppress it — this is what the `ask`/`send` CLI relies on."""
+    hub, claude = fleet
+    harness, runner = await start_agent(hub, "alpha", lambda s, t: "the answer is 4")
+    try:
+        # send_message creates a real DM (dm_key set); no @mention in the body.
+        sent = await claude.call_tool("send_message", {"to": "alpha", "message": "what is 2+2?"})
+        room_id = sent.data["room_id"]
+        await wait_for(lambda: len(hub.store.fetch_messages(room_id)) == 2)
+
+        reply = hub.store.fetch_messages(room_id)[-1]
+        assert reply.sender == "alpha"
+        assert "4" in reply.body
+    finally:
+        await stop_agent(harness, runner)
+
+
 async def test_agent_ignores_messages_it_was_not_mentioned_in(fleet) -> None:
     hub, claude = fleet
     harness, runner = await start_agent(hub, "alpha", lambda s, t: "should not fire")

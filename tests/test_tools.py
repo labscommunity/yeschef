@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from cascadia_tasks.agent.backends.base import ToolCall
 from cascadia_tasks.tools.executor import ToolExecutor, ToolsConfig
+
+posix_shell = pytest.mark.skipif(os.name == "nt", reason="executes a POSIX shell command")
 
 
 def call(name: str, **arguments) -> ToolCall:
@@ -60,6 +64,7 @@ async def test_shell_requires_an_allowlist_entry(workspace) -> None:
     assert "not allowed" in result.content
 
 
+@posix_shell
 async def test_shell_runs_an_allowlisted_command(workspace) -> None:
     executor = ToolExecutor(
         ToolsConfig(allow=["shell"], shell_allowlist=["echo *"], file_root=str(workspace))
@@ -70,6 +75,7 @@ async def test_shell_runs_an_allowlisted_command(workspace) -> None:
     assert "exit=0" in result.content
 
 
+@posix_shell
 async def test_shell_reports_a_nonzero_exit_as_an_error(workspace) -> None:
     executor = ToolExecutor(
         ToolsConfig(allow=["shell"], shell_allowlist=["ls *"], file_root=str(workspace))
@@ -121,6 +127,7 @@ async def test_wildcard_patterns_do_not_smuggle_a_second_command(workspace, comm
     assert "not allowed" in result.content
 
 
+@posix_shell
 async def test_an_operator_can_still_allow_a_pipeline_deliberately(workspace) -> None:
     executor = ToolExecutor(
         ToolsConfig(
@@ -162,6 +169,7 @@ async def test_one_deliberate_pipeline_does_not_unlock_every_pattern(
     assert "not allowed" in result.content
 
 
+@posix_shell
 async def test_the_deliberate_pattern_itself_still_runs(workspace) -> None:
     executor = ToolExecutor(
         ToolsConfig(
@@ -174,6 +182,7 @@ async def test_the_deliberate_pattern_itself_still_runs(workspace) -> None:
     assert (workspace / "out.txt").exists()
 
 
+@posix_shell
 async def test_a_timed_out_command_is_killed_not_orphaned(workspace) -> None:
     executor = ToolExecutor(
         ToolsConfig(
@@ -188,6 +197,7 @@ async def test_a_timed_out_command_is_killed_not_orphaned(workspace) -> None:
     assert "killed" in result.content
 
 
+@posix_shell
 async def test_shell_runs_in_the_workspace(workspace) -> None:
     executor = ToolExecutor(
         ToolsConfig(allow=["shell"], shell_allowlist=["pwd"], file_root=str(workspace))
@@ -196,6 +206,7 @@ async def test_shell_runs_in_the_workspace(workspace) -> None:
     assert str(workspace.resolve()) in result.content
 
 
+@posix_shell
 async def test_shell_times_out(workspace) -> None:
     executor = ToolExecutor(
         ToolsConfig(

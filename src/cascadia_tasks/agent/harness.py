@@ -157,11 +157,14 @@ class Harness:
         policy = room.get("policy") or {}
         if policy.get("turn_policy") == TurnPolicy.ROUND_ROBIN:
             return  # replies are driven by floor grants
-        if self.config.reply_when is ReplyWhen.MENTIONED:
-            if self.config.name not in (message.get("mentions") or []):
+        # A direct message is addressed to me by definition — always answer it, whatever
+        # the group-room reply policy is. `reply_when` governs multi-party rooms only.
+        if not room.get("is_dm"):
+            if self.config.reply_when is ReplyWhen.MENTIONED:
+                if self.config.name not in (message.get("mentions") or []):
+                    return
+            elif self.config.reply_when is ReplyWhen.ROUND_ROBIN:
                 return
-        elif self.config.reply_when is ReplyWhen.ROUND_ROBIN:
-            return
         await self._reply_in_room(room_id)
 
     async def _on_floor(self, event: dict) -> None:

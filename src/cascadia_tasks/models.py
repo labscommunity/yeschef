@@ -249,6 +249,7 @@ class Room:
             "topic": self.topic,
             "created_by": self.created_by,
             "open": self.open,
+            "is_dm": self.dm_key is not None,
             "policy": self.policy.to_dict(),
             "archived": self.archived,
             "archived_reason": self.archived_reason,
