@@ -8,10 +8,14 @@ worker node; the hub never executes anything.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import fnmatch
+import ipaddress
 import shlex
+import socket
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 
@@ -21,6 +25,36 @@ MAX_OUTPUT_CHARS = 20_000
 
 SHELL_METACHARACTERS = (";", "&&", "||", "|", "`", "$(", ">", "<", "\n", "&")
 """Anything that could chain or redirect a second command past the allowlist."""
+
+MAX_REDIRECTS = 3
+
+
+def _reject_internal_url(url: str) -> str | None:
+    """Return a reason to refuse this URL, or None if it looks externally routable."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return "url must be http(s)"
+    if not parsed.hostname:
+        return "url has no host"
+    try:
+        infos = socket.getaddrinfo(parsed.hostname, parsed.port or 0, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        return f"could not resolve host: {exc}"
+    for info in infos:
+        address = ipaddress.ip_address(info[4][0])
+        if (
+            address.is_private
+            or address.is_loopback
+            or address.is_link_local
+            or address.is_reserved
+            or address.is_multicast
+            or address.is_unspecified
+        ):
+            return (
+                f"refusing to fetch an internal address ({address}); web_fetch reaches "
+                "the public internet only"
+            )
+    return None
 
 
 @dataclass(slots=True)
@@ -116,8 +150,11 @@ class ToolExecutor:
         }.get(call.name)
         if handler is None:
             return self._error(call, f"unknown tool '{call.name}'")
+        # `shell` enforces its own deadline so it can kill the child; give the generic
+        # backstop extra room rather than racing it.
+        budget = self.config.timeout_s + (5.0 if call.name == "shell" else 0.0)
         try:
-            return await asyncio.wait_for(handler(call), timeout=self.config.timeout_s)
+            return await asyncio.wait_for(handler(call), timeout=budget)
         except TimeoutError:
             return self._error(call, f"tool timed out after {self.config.timeout_s}s")
         except Exception as exc:  # noqa: BLE001 - surfaced to the model, not swallowed
@@ -140,7 +177,15 @@ class ToolExecutor:
             stderr=asyncio.subprocess.STDOUT,
             cwd=str(self.root) if self.root else None,
         )
-        stdout, _ = await proc.communicate()
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=self.config.timeout_s)
+        except TimeoutError:
+            # Cancelling the wait leaves the process running; kill it or the node
+            # accumulates an orphan per timed-out call.
+            proc.kill()
+            with contextlib.suppress(Exception):
+                await proc.wait()
+            return self._error(call, f"command timed out after {self.config.timeout_s}s (killed)")
         text = stdout.decode(errors="replace")[:MAX_OUTPUT_CHARS]
         return ToolResult(
             call_id=call.id,
@@ -150,27 +195,29 @@ class ToolExecutor:
         )
 
     def _shell_allowed(self, command: str) -> bool:
-        """Match against the allowlist, but never let a wildcard smuggle in a second command.
+        """Match against the allowlist without letting a wildcard smuggle in a second command.
 
-        A pattern like `rg *` is meant to allow ripgrep, not `rg x; rm -rf /` — and plain
-        fnmatch would happily match both. Commands carrying shell metacharacters are
-        therefore refused unless the operator put a metacharacter in a pattern themselves.
+        A pattern like `rg *` is meant to allow ripgrep, not `rg x; rm -rf /`, and plain
+        fnmatch matches both. So a command carrying shell metacharacters is only accepted
+        by a pattern that carries one itself — checked **per matching pattern**, because a
+        single deliberate pipeline elsewhere in the list must not re-open chaining for
+        every other entry.
         """
         if not self.config.shell_allowlist:
             return False
-        if any(token in command for token in SHELL_METACHARACTERS):
-            deliberate = any(
-                token in pattern
-                for pattern in self.config.shell_allowlist
-                for token in SHELL_METACHARACTERS
-            )
-            if not deliberate:
-                return False
         try:
             shlex.split(command)
         except ValueError:
             return False
-        return any(fnmatch.fnmatch(command, pattern) for pattern in self.config.shell_allowlist)
+
+        command_chains = any(token in command for token in SHELL_METACHARACTERS)
+        for pattern in self.config.shell_allowlist:
+            if not fnmatch.fnmatch(command, pattern):
+                continue
+            if command_chains and not any(token in pattern for token in SHELL_METACHARACTERS):
+                continue  # this pattern authorized one command, not a chain
+            return True
+        return False
 
     def _resolve(self, raw: str) -> Path:
         if self.root is None:
@@ -204,14 +251,31 @@ class ToolExecutor:
         return ToolResult(call.id, call.name, "\n".join(entries)[:MAX_OUTPUT_CHARS] or "(empty)")
 
     async def _web_fetch(self, call: ToolCall) -> ToolResult:
+        """Fetch a public URL.
+
+        Redirects are followed by hand so every hop is re-checked: otherwise a public URL
+        could bounce the worker into the hub's own API, a node's model server, or a cloud
+        metadata endpoint.
+        """
         url = str(call.arguments.get("url", ""))
-        if not url.startswith(("http://", "https://")):
-            return self._error(call, "url must be http(s)")
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-            body = response.text[: self.config.max_fetch_bytes]
-        return ToolResult(call.id, call.name, body[:MAX_OUTPUT_CHARS])
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client:
+            for _ in range(MAX_REDIRECTS + 1):
+                problem = _reject_internal_url(url)
+                if problem:
+                    return self._error(call, problem)
+                response = await client.get(url)
+                if response.is_redirect and response.headers.get("location"):
+                    url = str(response.next_request.url) if response.next_request else ""
+                    continue
+                response.raise_for_status()
+                body = b""
+                async for chunk in response.aiter_bytes():
+                    body += chunk
+                    if len(body) >= self.config.max_fetch_bytes:
+                        break
+                text = body[: self.config.max_fetch_bytes].decode(errors="replace")
+                return ToolResult(call.id, call.name, text[:MAX_OUTPUT_CHARS])
+        return self._error(call, "too many redirects")
 
     def _error(self, call: ToolCall, message: str) -> ToolResult:
         return ToolResult(call.id, call.name, f"error: {message}", is_error=True)

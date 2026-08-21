@@ -6,6 +6,7 @@ short; async handlers call straight in. All timestamps are assigned here.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import secrets
@@ -75,16 +76,33 @@ class Store:
         node: str | None = None,
         backend: str | None = None,
         tags: list[str] | None = None,
+        presented_token: str | None = None,
+        privileged: bool = False,
     ) -> tuple[Agent, str]:
-        """Register or re-register. Re-registration mints a fresh token."""
+        """Register, or re-register with proof of ownership.
+
+        Claiming a name that already has a token requires either that token or a
+        privileged caller — otherwise anyone reaching the hub could take over an
+        agent's identity and lock the real one out.
+        """
         if not name or "\x1f" in name:
             raise HubError(ErrorCode.INVALID, "invalid agent name")
         token = secrets.token_urlsafe(24)
         ts = now()
         with self._lock:
             existing = self._db.execute(
-                "SELECT created_at FROM agents WHERE name = ?", (name,)
+                "SELECT created_at, token_hash FROM agents WHERE name = ?", (name,)
             ).fetchone()
+            if existing and existing["token_hash"] and not privileged:
+                matches = presented_token is not None and secrets.compare_digest(
+                    existing["token_hash"], _hash_token(presented_token)
+                )
+                if not matches:
+                    raise HubError(
+                        ErrorCode.FORBIDDEN,
+                        f"agent '{name}' is already registered; present its token to re-register",
+                        403,
+                    )
             created_at = existing["created_at"] if existing else ts
             self._db.execute(
                 """INSERT INTO agents (name, kind, node, backend, tags, token_hash, last_seen,
@@ -139,6 +157,10 @@ class Store:
             )
             self._db.execute("DELETE FROM room_members WHERE agent = ?", (old,))
             self._db.execute("UPDATE rooms SET floor_holder = ? WHERE floor_holder = ?", (new, old))
+            self._db.execute("UPDATE rooms SET created_by = ? WHERE created_by = ?", (new, old))
+            self._db.execute("UPDATE messages SET sender = ? WHERE sender = ?", (new, old))
+            self._db.execute("UPDATE tasks SET created_by = ? WHERE created_by = ?", (new, old))
+            self._db.execute("UPDATE tasks SET assignee = ? WHERE assignee = ?", (new, old))
             self._db.execute("DELETE FROM agents WHERE name = ? AND kind = 'claude'", (old,))
             self._db.commit()
         agent = self.get_agent(new)
@@ -153,6 +175,15 @@ class Store:
         if row is None or not row["token_hash"]:
             return False
         return secrets.compare_digest(row["token_hash"], _hash_token(token))
+
+    def identify_token(self, token: str) -> str | None:
+        """Resolve a bearer token to an agent name, for routes that only need 'someone valid'."""
+        digest = _hash_token(token)
+        with self._lock:
+            row = self._db.execute(
+                "SELECT name FROM agents WHERE token_hash = ?", (digest,)
+            ).fetchone()
+        return row["name"] if row else None
 
     def heartbeat(self, name: str) -> None:
         with self._lock:
@@ -204,7 +235,8 @@ class Store:
         room_id: str | None = None,
         dm_key: str | None = None,
     ) -> Room:
-        policy = policy or RoomPolicy()
+        # Backstops are applied here so no code path can create an unbounded room.
+        policy = (policy or RoomPolicy()).bounded()
         rid = room_id or new_id("room")
         ts = now()
         members = list(dict.fromkeys([created_by, *(participants or [])]))
@@ -248,8 +280,14 @@ class Store:
             row = self._db.execute("SELECT id FROM rooms WHERE dm_key = ?", (key,)).fetchone()
         if row:
             room = self.get_room(row["id"])
-            if room is not None:
+            if room is not None and not room.archived:
                 return room
+            if room is not None:
+                # The old thread hit a policy backstop. Release the key so the pair can
+                # keep talking in a fresh room instead of being wedged forever.
+                with self._lock:
+                    self._db.execute("UPDATE rooms SET dm_key = NULL WHERE id = ?", (room.id,))
+                    self._db.commit()
         return self.create_room(
             topic=f"{a} ↔ {b}", created_by=a, participants=[b], dm_key=key, room_id=new_id("dm")
         )
@@ -302,12 +340,14 @@ class Store:
             ids = [r["id"] for r in self._db.execute(sql, args).fetchall()]
         return [room for room in (self.get_room(i) for i in ids) if room is not None]
 
-    def join_room(self, room_id: str, agent: str) -> Room:
+    def join_room(self, room_id: str, agent: str, privileged: bool = False) -> Room:
         room = self.require_room(room_id)
         if room.archived:
             raise HubError(ErrorCode.CONFLICT, "room is archived", 409)
         if agent in room.members:
             return room
+        if not room.open and not privileged:
+            raise HubError(ErrorCode.FORBIDDEN, "room is invite-only", 403)
         with self._lock:
             pos = self._db.execute(
                 "SELECT COALESCE(MAX(ring_pos), -1) + 1 AS p FROM room_members WHERE room_id = ?",
@@ -339,7 +379,14 @@ class Store:
             if fresh and self._floor_holder(room_id) == agent:
                 self._grant_floor(fresh, self._first_worker(fresh))
 
-    def archive_room(self, room_id: str, reason: str) -> Room:
+    def archive_room(
+        self, room_id: str, reason: str, by: str | None = None, privileged: bool = False
+    ) -> Room:
+        """`by` is checked for membership unless the caller is privileged."""
+        if by is not None and not privileged:
+            room = self.require_room(room_id)
+            if by not in room.members:
+                raise HubError(ErrorCode.FORBIDDEN, "not a member of this room", 403)
         with self._lock:
             self._db.execute(
                 "UPDATE rooms SET archived = 1, archived_reason = ?, floor_holder = NULL "
@@ -384,6 +431,20 @@ class Store:
                 holder, EventKind.FLOOR_GRANTED, {"room_id": room.id, "topic": room.topic}
             )
 
+    def yield_floor(self, room_id: str, agent: str) -> Room:
+        """Pass the turn without speaking.
+
+        Without this a round-robin dialogue stalls for good whenever the agent holding
+        the floor has nothing to say or its model call fails.
+        """
+        room = self.require_room(room_id)
+        if room.policy.turn_policy is not TurnPolicy.ROUND_ROBIN or room.archived:
+            return room
+        if self._floor_holder(room_id) != agent:
+            raise HubError(ErrorCode.CONFLICT, "you do not hold the floor", 409)
+        self._advance_floor(room, agent)
+        return self.require_room(room_id)
+
     def _advance_floor(self, room: Room, sender: str) -> None:
         """Worker turn passes to the next in ring; a Claude interjection re-anchors."""
         ring = self._worker_ring(room)
@@ -421,25 +482,37 @@ class Store:
 
         agent = self.get_agent(sender)
         is_claude = agent is not None and agent.kind is AgentKind.CLAUDE
-        if room.policy.turn_policy is TurnPolicy.ROUND_ROBIN and not is_claude:
-            holder = self._floor_holder(room_id)
-            if holder is not None and holder != sender:
-                raise HubError(ErrorCode.CONFLICT, f"not your turn (floor held by '{holder}')", 409)
-
-        if client_msg_id:
-            with self._lock:
-                dupe = self._db.execute(
-                    "SELECT * FROM messages WHERE sender = ? AND client_msg_id = ?",
-                    (sender, client_msg_id),
-                ).fetchone()
-            if dupe:
-                return self._row_to_message(dupe)
+        round_robin = room.policy.turn_policy is TurnPolicy.ROUND_ROBIN
 
         mentions = mentions if mentions is not None else _parse_mentions(body, room.members)
         cost = tokens if tokens is not None else estimate_tokens(body)
         ts = now()
         mid = new_id("msg")
+
+        # Floor check, idempotency, sequence assignment, insert, and floor hand-off all
+        # happen under one lock. Split across transactions, two concurrent posts from the
+        # floor holder both passed the turn check and it took two turns in one round.
         with self._lock:
+            if round_robin and not is_claude:
+                holder = self._floor_holder(room_id)
+                if holder is None:
+                    # An unseeded ring would otherwise mean no turn enforcement at all.
+                    holder = self._first_worker(room)
+                    if holder is not None:
+                        self._grant_floor(room, holder)
+                if holder is not None and holder != sender:
+                    raise HubError(
+                        ErrorCode.CONFLICT, f"not your turn (floor held by '{holder}')", 409
+                    )
+
+            if client_msg_id:
+                dupe = self._db.execute(
+                    "SELECT * FROM messages WHERE sender = ? AND client_msg_id = ?",
+                    (sender, client_msg_id),
+                ).fetchone()
+                if dupe:
+                    return self._row_to_message(dupe)
+
             seq = self._db.execute(
                 "SELECT next_seq FROM rooms WHERE id = ?", (room_id,)
             ).fetchone()["next_seq"]
@@ -468,10 +541,9 @@ class Store:
             )
             self._db.commit()
             row = self._db.execute("SELECT * FROM messages WHERE id = ?", (mid,)).fetchone()
-        message = self._row_to_message(row)
-
-        if room.policy.turn_policy is TurnPolicy.ROUND_ROBIN:
-            self._advance_floor(room, sender)
+            message = self._row_to_message(row)
+            if round_robin:
+                self._advance_floor(room, sender)
 
         self.bus.publish_many(
             [m for m in room.members if m != sender],
@@ -498,13 +570,29 @@ class Store:
         elif policy.max_total_tokens is not None and row["total_tokens"] >= policy.max_total_tokens:
             self.archive_room(room_id, "max_total_tokens")
 
-    def fetch_messages(self, room_id: str, after_seq: int = 0, limit: int = 100) -> list[Message]:
+    def fetch_messages(
+        self, room_id: str, after_seq: int = 0, limit: int = 100, tail: bool = False
+    ) -> list[Message]:
+        """Messages in seq order.
+
+        `tail=True` returns the most recent `limit` instead of the oldest — what an agent
+        needs when building its context window, since a long room would otherwise leave it
+        replying to the start of a conversation that has moved on.
+        """
         with self._lock:
-            rows = self._db.execute(
-                """SELECT * FROM messages WHERE room_id = ? AND seq > ?
-                   ORDER BY seq LIMIT ?""",
-                (room_id, after_seq, limit),
-            ).fetchall()
+            if tail:
+                rows = self._db.execute(
+                    """SELECT * FROM messages WHERE room_id = ? AND seq > ?
+                       ORDER BY seq DESC LIMIT ?""",
+                    (room_id, after_seq, limit),
+                ).fetchall()
+                rows = list(reversed(rows))
+            else:
+                rows = self._db.execute(
+                    """SELECT * FROM messages WHERE room_id = ? AND seq > ?
+                       ORDER BY seq LIMIT ?""",
+                    (room_id, after_seq, limit),
+                ).fetchall()
         return [self._row_to_message(r) for r in rows]
 
     def fetch_inbox(
@@ -528,7 +616,14 @@ class Store:
             item = self._row_to_message(row).to_dict()
             item["cursor"] = row["cursor"]
             out.append(item)
-        cursor = out[-1]["cursor"] if out else max(after_cursor, top["c"])
+        if out:
+            cursor = out[-1]["cursor"]
+        elif room_id is not None:
+            # A filtered read saw nothing; jumping to the global max here would skip
+            # unread messages sitting in the caller's other rooms.
+            cursor = after_cursor
+        else:
+            cursor = max(after_cursor, top["c"])
         return out, cursor
 
     def _row_to_message(self, row: sqlite3.Row) -> Message:
@@ -651,14 +746,30 @@ class Store:
     def update_progress(
         self, task_id: str, agent: str, pct: float | None = None, message: str | None = None
     ) -> Task:
-        task = self._require_holder(task_id, agent)
-        if task.state is TaskState.CLAIMED:
-            self._set_state(task_id, TaskState.WORKING)
+        """Record progress and promote claimed → working, atomically.
+
+        Checking the state and then writing in a second transaction let an in-flight
+        progress call resurrect a task that had just completed, leaving it permanently
+        non-terminal.
+        """
         with self._lock:
+            self._require_holder(task_id, agent)
             self._db.execute(
-                "UPDATE tasks SET progress_pct = COALESCE(?, progress_pct), "
-                "progress_msg = COALESCE(?, progress_msg) WHERE id = ?",
-                (pct, message, task_id),
+                """UPDATE tasks
+                      SET state = CASE WHEN state = ? THEN ? ELSE state END,
+                          progress_pct = COALESCE(?, progress_pct),
+                          progress_msg = COALESCE(?, progress_msg)
+                    WHERE id = ? AND state IN (?, ?, ?)""",
+                (
+                    str(TaskState.CLAIMED),
+                    str(TaskState.WORKING),
+                    pct,
+                    message,
+                    task_id,
+                    str(TaskState.CLAIMED),
+                    str(TaskState.WORKING),
+                    str(TaskState.INPUT_REQUIRED),
+                ),
             )
             self._db.commit()
         self._log_task(task_id, "progress", {"pct": pct, "message": message})
@@ -675,14 +786,18 @@ class Store:
         self._require_holder(task_id, agent)
         return self._finish(task_id, TaskState.FAILED, error=error)
 
-    def cancel_task(self, task_id: str, by: str) -> Task:
+    def cancel_task(self, task_id: str, by: str, privileged: bool = False) -> Task:
         task = self.get_task(task_id)
         if task is None:
             raise not_found(f"task '{task_id}'")
+        if not privileged and by not in {task.created_by, task.assignee}:
+            raise HubError(
+                ErrorCode.FORBIDDEN, "only the requester or the assignee can cancel a task", 403
+            )
         if task.state.terminal:
             raise HubError(ErrorCode.CONFLICT, f"task already {task.state}", 409)
         holder = task.assignee
-        finished = self._finish(task_id, TaskState.CANCELLED, error=f"cancelled by {by}")
+        finished = self._finish(task_id, TaskState.CANCELLED, error=f"cancelled by {by}")  # noqa: E501
         if holder:
             self.bus.publish(holder, EventKind.TASK_CANCELLED, {"task_id": task_id, "by": by})
         return finished
@@ -731,12 +846,27 @@ class Store:
             if room is not None:
                 return room
         members = [m for m in (task.created_by, task.assignee) if m]
-        room = self.create_room(
-            topic=f"task: {task.title}",
-            created_by=task.created_by,
-            participants=members[1:],
-            room_id=f"room_{task.id}",
-        )
+        room_id = f"room_{task.id}"
+        with self._lock:
+            # Re-check under the lock: request_input and task_room can arrive together.
+            existing = self._db.execute("SELECT id FROM rooms WHERE id = ?", (room_id,)).fetchone()
+        if existing:
+            room = self.get_room(room_id)
+            if room is not None:
+                return room
+        try:
+            room = self.create_room(
+                topic=f"task: {task.title}",
+                created_by=task.created_by,
+                participants=members[1:],
+                room_id=room_id,
+            )
+        except sqlite3.IntegrityError:
+            # Another caller created it between the check and the insert.
+            room = self.get_room(room_id)
+            if room is None:
+                raise
+            return room
         with self._lock:
             self._db.execute("UPDATE tasks SET room_id = ? WHERE id = ?", (room.id, task_id))
             self._db.commit()
@@ -820,12 +950,18 @@ class Store:
         result: dict | None = None,
         error: str | None = None,
     ) -> Task:
+        """Move a task to a terminal state, once.
+
+        The guard matters: the sweep and a finishing agent can race, and an unguarded
+        write would let a timeout overwrite a result the agent had already delivered.
+        First writer wins; the loser sees a conflict instead of silently erasing work.
+        """
         with self._lock:
-            self._db.execute(
+            cursor = self._db.execute(
                 """UPDATE tasks SET state = ?, result_json = ?, error = ?, finished_at = ?,
                                     progress_pct = CASE WHEN ? = 'completed' THEN 100.0
                                                         ELSE progress_pct END
-                   WHERE id = ?""",
+                   WHERE id = ? AND state NOT IN (?, ?, ?)""",
                 (
                     str(state),
                     json.dumps(result) if result is not None else None,
@@ -833,12 +969,19 @@ class Store:
                     now(),
                     str(state),
                     task_id,
+                    str(TaskState.COMPLETED),
+                    str(TaskState.FAILED),
+                    str(TaskState.CANCELLED),
                 ),
             )
             self._db.commit()
-        self._log_task(task_id, str(state), {"error": error} if error else {})
+            applied = cursor.rowcount == 1
         task = self.get_task(task_id)
-        assert task is not None
+        if task is None:
+            raise not_found(f"task '{task_id}'")
+        if not applied:
+            raise HubError(ErrorCode.CONFLICT, f"task already {task.state}", 409)
+        self._log_task(task_id, str(state), {"error": error} if error else {})
         self._notify_task_watchers(task)
         return task
 
@@ -889,29 +1032,50 @@ class Store:
 
         with self._lock:
             rows = self._db.execute(
-                "SELECT * FROM tasks WHERE state IN (?, ?, ?)",
-                (str(TaskState.CLAIMED), str(TaskState.WORKING), str(TaskState.INPUT_REQUIRED)),
+                "SELECT * FROM tasks WHERE state IN (?, ?, ?, ?)",
+                (
+                    str(TaskState.QUEUED),
+                    str(TaskState.CLAIMED),
+                    str(TaskState.WORKING),
+                    str(TaskState.INPUT_REQUIRED),
+                ),
             ).fetchall()
         for row in rows:
             task = self._row_to_task(row)
-            if task.claimed_at and ref - task.claimed_at > task.timeout_s:
-                self._finish(task.id, TaskState.FAILED, error="timeout")
-                stats["timed_out"] += 1
+            # A task nobody ever claimed still has a deadline — otherwise work dispatched
+            # to an offline agent sits in `queued` forever and the requester is never told.
+            started = task.claimed_at if task.claimed_at is not None else task.created_at
+            if ref - started > task.timeout_s:
+                with contextlib.suppress(HubError):
+                    self._finish(task.id, TaskState.FAILED, error="timeout")
+                    stats["timed_out"] += 1
                 continue
-            if task.state is TaskState.INPUT_REQUIRED:
-                continue  # parked on a human, not on the agent
+            if task.state in (TaskState.QUEUED, TaskState.INPUT_REQUIRED):
+                # Queued waits on an agent to appear; input_required waits on a human.
+                if task.state is TaskState.QUEUED:
+                    self._announce_task(task)
+                continue
             holder = self.get_agent(task.assignee) if task.assignee else None
             if holder is None or ref - holder.last_seen > HEARTBEAT_TTL_S:
                 if task.attempts >= MAX_TASK_ATTEMPTS:
-                    self._finish(task.id, TaskState.FAILED, error="agent_lost")
+                    with contextlib.suppress(HubError):
+                        self._finish(task.id, TaskState.FAILED, error="agent_lost")
                 else:
                     with self._lock:
-                        self._db.execute(
-                            "UPDATE tasks SET state = ?, assignee = NULL, claimed_at = NULL "
-                            "WHERE id = ?",
-                            (str(TaskState.QUEUED), task.id),
+                        cursor = self._db.execute(
+                            """UPDATE tasks SET state = ?, assignee = NULL, claimed_at = NULL
+                               WHERE id = ? AND state IN (?, ?)""",
+                            (
+                                str(TaskState.QUEUED),
+                                task.id,
+                                str(TaskState.CLAIMED),
+                                str(TaskState.WORKING),
+                            ),
                         )
                         self._db.commit()
+                        requeued_ok = cursor.rowcount == 1
+                    if not requeued_ok:
+                        continue  # the agent finished after all; leave its result alone
                     self._log_task(task.id, "requeued", {"reason": "agent_lost"})
                     requeued = self.get_task(task.id)
                     if requeued is not None:

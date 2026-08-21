@@ -112,6 +112,16 @@ MAX_ARTIFACT_BYTES = 32 * 1024 * 1024
 
 DEFAULT_TASK_TIMEOUT_S = 3600.0
 
+DEFAULT_MAX_ROOM_MESSAGES = 200
+"""Backstop applied to any room created without a message cap.
+
+The point is not the number — it is that no room is ever unbounded. Two agents set to
+reply on every message will otherwise talk to each other until the hardware gives out.
+"""
+
+DEFAULT_ROOM_IDLE_TIMEOUT_S = 24 * 3600.0
+"""Backstop applied to any room created without an idle timeout."""
+
 
 @dataclass(slots=True)
 class ToolCall:
@@ -162,6 +172,26 @@ class RoomPolicy:
             max_total_tokens=raw.get("max_total_tokens"),
             idle_timeout_s=raw.get("idle_timeout_s"),
             stop_phrase=raw.get("stop_phrase"),
+        )
+
+    def bounded(
+        self,
+        max_messages: int = DEFAULT_MAX_ROOM_MESSAGES,
+        idle_timeout_s: float = DEFAULT_ROOM_IDLE_TIMEOUT_S,
+    ) -> RoomPolicy:
+        """Return this policy with backstops filled in where the caller left gaps.
+
+        Every room goes through here, so an unbounded conversation cannot be created
+        by omission — only a caller who names a larger explicit limit gets one.
+        """
+        return RoomPolicy(
+            turn_policy=self.turn_policy,
+            max_messages=self.max_messages if self.max_messages is not None else max_messages,
+            max_total_tokens=self.max_total_tokens,
+            idle_timeout_s=(
+                self.idle_timeout_s if self.idle_timeout_s is not None else idle_timeout_s
+            ),
+            stop_phrase=self.stop_phrase,
         )
 
 

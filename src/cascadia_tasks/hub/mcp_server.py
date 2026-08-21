@@ -199,7 +199,10 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
                     await asyncio.wait_for(queue.get(), timeout=budget)
             messages, cursor = store.fetch_inbox(me, start, limit, room)
 
-        ident.set_cursor(me, cursor)
+        if room is None:
+            # A room-scoped read is a peek, not a receipt: advancing the shared cursor
+            # here would silently drop unread messages from every other room.
+            ident.set_cursor(me, cursor)
         return {"messages": messages, "cursor": cursor, "identity": me}
 
     @mcp.tool
@@ -235,8 +238,8 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
     @mcp.tool
     @_guard
     def join_room(room: str) -> dict:
-        """Join an existing room as this session."""
-        return {"room": store.join_room(room, ident.current()).to_dict()}
+        """Join an existing room as this session, invited or not."""
+        return {"room": store.join_room(room, ident.current(), privileged=True).to_dict()}
 
     @mcp.tool
     @_guard
@@ -269,7 +272,8 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
     @_guard
     def archive_room(room: str, reason: str = "closed by operator") -> dict:
         """Stop a conversation. Archived rooms reject further messages."""
-        return {"room": store.archive_room(room, reason).to_dict()}
+        archived = store.archive_room(room, reason, by=ident.current(), privileged=True)
+        return {"room": archived.to_dict()}
 
     @mcp.tool
     @_guard
@@ -390,7 +394,8 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
     @_guard
     def cancel_task(task_id: str) -> dict:
         """Cancel a queued or running task. The agent is told to stop."""
-        return {"task": store.cancel_task(task_id, ident.current()).to_dict()}
+        cancelled = store.cancel_task(task_id, ident.current(), privileged=True)
+        return {"task": cancelled.to_dict()}
 
     @mcp.tool
     @_guard
@@ -410,7 +415,7 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
         room = store.ensure_task_room(task_id)
         me = ident.current()
         if me not in room.members:
-            room = store.join_room(room.id, me)
+            room = store.join_room(room.id, me, privileged=True)
         return {"room": room.to_dict(), "task_state": str(task.state)}
 
     return mcp

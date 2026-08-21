@@ -54,17 +54,45 @@ def _bearer(header: str | None) -> str | None:
 
 
 class Auth:
-    """Resolves the calling identity for agent-facing routes."""
+    """Resolves the calling identity for agent-facing routes.
+
+    A hub with no tokens configured runs open on the LAN (and says so at startup). As
+    soon as any token is configured, reads and admin actions require one — otherwise
+    task specs and room transcripts would stay world-readable on a hub the operator
+    believes is locked down.
+    """
 
     def __init__(self, store: Store, config: HubConfig) -> None:
         self.store = store
         self.config = config
+
+    @property
+    def enforced(self) -> bool:
+        return self.config.admin_token is not None or self.config.register_token is not None
+
+    def is_privileged(self, header: str | None) -> bool:
+        token = _bearer(header)
+        return token is not None and token == self.config.admin_token
 
     def admin(self, header: str | None) -> None:
         if self.config.admin_token is None:
             return
         if _bearer(header) != self.config.admin_token:
             raise HubError(ErrorCode.UNAUTHORIZED, "admin token required", 401)
+
+    def reader(self, header: str | None) -> str | None:
+        """Any valid identity may read. Returns the caller's name, or None in open mode."""
+        if not self.enforced:
+            return None
+        token = _bearer(header)
+        if token is None:
+            raise HubError(ErrorCode.UNAUTHORIZED, "bearer token required", 401)
+        if token == self.config.admin_token:
+            return "admin"
+        name = self.store.identify_token(token)
+        if name is None:
+            raise HubError(ErrorCode.UNAUTHORIZED, "unknown token", 401)
+        return name
 
     def agent(self, name: str, header: str | None) -> str:
         token = _bearer(header)
@@ -78,6 +106,14 @@ class Auth:
         return name
 
 
+def _require_room_access(caller: str | None, room) -> None:
+    """Open mode (caller is None) reads freely; an authenticated caller must belong."""
+    if caller is None or caller == "admin":
+        return
+    if caller not in room.members:
+        raise HubError(ErrorCode.FORBIDDEN, "not a member of this room", 403)
+
+
 def build_router(store: Store, config: HubConfig) -> APIRouter:
     router = APIRouter(prefix="/api/v1")
     auth = Auth(store, config)
@@ -89,16 +125,24 @@ def build_router(store: Store, config: HubConfig) -> APIRouter:
 
     @router.post("/agents/register")
     def register(payload: dict = Body(...), authorization: AuthHeader = None) -> dict:
-        if config.register_token is not None:
-            accepted = {t for t in (config.register_token, config.admin_token) if t}
-            if _bearer(authorization) not in accepted:
-                raise HubError(ErrorCode.UNAUTHORIZED, "registration token required", 401)
+        bearer = _bearer(authorization)
+        gate_tokens = {t for t in (config.register_token, config.admin_token) if t}
+        privileged = bearer is not None and bearer in gate_tokens
+        if config.register_token is not None and not privileged:
+            raise HubError(ErrorCode.UNAUTHORIZED, "registration token required", 401)
+        # `kind` is not self-declared: a claude-kind agent is exempt from round-robin
+        # floor control, so anyone could otherwise register as one and talk without limit.
+        kind = AgentKind(payload.get("kind", AgentKind.WORKER))
+        if kind is not AgentKind.WORKER and not privileged:
+            raise HubError(ErrorCode.FORBIDDEN, "only workers may self-register", 403)
         agent, token = store.register_agent(
             name=payload["name"],
-            kind=AgentKind(payload.get("kind", AgentKind.WORKER)),
+            kind=kind,
             node=payload.get("node"),
             backend=payload.get("backend"),
             tags=payload.get("tags") or [],
+            presented_token=None if privileged else bearer,
+            privileged=privileged,
         )
         return {"agent": agent.to_dict(), "token": token}
 
@@ -107,7 +151,8 @@ def build_router(store: Store, config: HubConfig) -> APIRouter:
         return {"ok": True, "agent": name}
 
     @router.get("/agents")
-    def list_agents(kind: str | None = None) -> dict:
+    def list_agents(kind: str | None = None, authorization: AuthHeader = None) -> dict:
+        auth.reader(authorization)
         agents = store.list_agents(AgentKind(kind) if kind else None)
         return {"agents": [a.to_dict() for a in agents]}
 
@@ -151,8 +196,11 @@ def build_router(store: Store, config: HubConfig) -> APIRouter:
         return {"rooms": [r.to_dict() for r in rooms]}
 
     @router.get("/rooms/{room_id}")
-    def get_room(room_id: str) -> dict:
-        return {"room": store.require_room(room_id).to_dict()}
+    def get_room(room_id: str, authorization: AuthHeader = None) -> dict:
+        caller = auth.reader(authorization)
+        room = store.require_room(room_id)
+        _require_room_access(caller, room)
+        return {"room": room.to_dict()}
 
     @router.post("/rooms/{room_id}/join")
     def join_room(
@@ -160,7 +208,8 @@ def build_router(store: Store, config: HubConfig) -> APIRouter:
     ) -> dict:
         who = payload["as_agent"]
         auth.agent(who, authorization)
-        return {"room": store.join_room(room_id, who).to_dict()}
+        privileged = auth.is_privileged(authorization)
+        return {"room": store.join_room(room_id, who, privileged=privileged).to_dict()}
 
     @router.post("/rooms/{room_id}/leave")
     def leave_room(
@@ -181,7 +230,9 @@ def build_router(store: Store, config: HubConfig) -> APIRouter:
         else:
             auth.admin(authorization)
         reason = payload.get("reason") or f"archived by {who or 'admin'}"
-        return {"room": store.archive_room(room_id, reason).to_dict()}
+        privileged = who is None or auth.is_privileged(authorization)
+        archived = store.archive_room(room_id, reason, by=who, privileged=privileged)
+        return {"room": archived.to_dict()}
 
     @router.post("/rooms/{room_id}/messages")
     def post_message(
@@ -201,10 +252,25 @@ def build_router(store: Store, config: HubConfig) -> APIRouter:
         )
         return {"message": message.to_dict()}
 
+    @router.post("/rooms/{room_id}/yield")
+    def yield_floor(
+        room_id: str, payload: dict = Body(...), authorization: AuthHeader = None
+    ) -> dict:
+        who = payload["as_agent"]
+        auth.agent(who, authorization)
+        return {"room": store.yield_floor(room_id, who).to_dict()}
+
     @router.get("/rooms/{room_id}/messages")
-    def get_messages(room_id: str, after: int = 0, limit: int = 100) -> dict:
-        store.require_room(room_id)
-        messages = store.fetch_messages(room_id, after_seq=after, limit=min(limit, 500))
+    def get_messages(
+        room_id: str,
+        after: int = 0,
+        limit: int = 100,
+        tail: bool = False,
+        authorization: AuthHeader = None,
+    ) -> dict:
+        caller = auth.reader(authorization)
+        _require_room_access(caller, store.require_room(room_id))
+        messages = store.fetch_messages(room_id, after_seq=after, limit=min(limit, 500), tail=tail)
         return {"messages": [m.to_dict() for m in messages]}
 
     @router.get("/inbox")
@@ -243,7 +309,15 @@ def build_router(store: Store, config: HubConfig) -> APIRouter:
         assignee: str | None = None,
         created_by: str | None = None,
         limit: int = 100,
+        authorization: AuthHeader = None,
     ) -> dict:
+        caller = auth.reader(authorization)
+        if caller is not None and caller != "admin" and not (assignee or created_by):
+            # A plain agent sees its own work, not the whole fleet's task specs.
+            own = store.list_tasks(state=TaskState(state) if state else None, assignee=caller)
+            mine = store.list_tasks(state=TaskState(state) if state else None, created_by=caller)
+            merged = {t.id: t for t in [*own, *mine]}
+            return {"tasks": [t.to_dict() for t in merged.values()][:limit]}
         tasks = store.list_tasks(
             state=TaskState(state) if state else None,
             assignee=assignee,
@@ -259,8 +333,19 @@ def build_router(store: Store, config: HubConfig) -> APIRouter:
         return {"task": task.to_dict() if task else None}
 
     @router.get("/tasks/{task_id}")
-    def get_task(task_id: str) -> dict:
+    def get_task(task_id: str, authorization: AuthHeader = None) -> dict:
+        caller = auth.reader(authorization)
         task = store.require_task(task_id)
+        if (
+            caller is not None
+            and caller != "admin"
+            and caller
+            not in (
+                task.created_by,
+                task.assignee,
+            )
+        ):
+            raise HubError(ErrorCode.FORBIDDEN, "not your task", 403)
         return {"task": task.to_dict(), "events": [e.to_dict() for e in store.task_events(task_id)]}
 
     @router.post("/tasks/{task_id}/claim")
@@ -321,7 +406,9 @@ def build_router(store: Store, config: HubConfig) -> APIRouter:
             auth.agent(who, authorization)
         else:
             auth.admin(authorization)
-        return {"task": store.cancel_task(task_id, who or "admin").to_dict()}
+        privileged = who is None or auth.is_privileged(authorization)
+        cancelled = store.cancel_task(task_id, who or "admin", privileged=privileged)
+        return {"task": cancelled.to_dict()}
 
     # -------------------------------------------------------------- watch
 

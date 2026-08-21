@@ -104,7 +104,7 @@ class AgentClient:
         return data["agents"]
 
     async def health(self) -> dict:
-        response = await httpx.AsyncClient(timeout=10.0).get(f"{self.hub_url}/healthz")
+        response = await self._http.get("/healthz", headers=self._headers())
         response.raise_for_status()
         return response.json()
 
@@ -205,9 +205,19 @@ class AgentClient:
         result = await self._request("POST", f"/rooms/{room_id}/messages", json=payload)
         return result["message"]
 
-    async def messages(self, room_id: str, after: int = 0, limit: int = 100) -> list[dict]:
+    async def yield_floor(self, room_id: str) -> dict:
+        """Pass the turn in a round-robin room without posting."""
+        data = await self._request("POST", f"/rooms/{room_id}/yield", json=self._as_me({}))
+        return data["room"]
+
+    async def messages(
+        self, room_id: str, after: int = 0, limit: int = 100, tail: bool = False
+    ) -> list[dict]:
+        """`tail=True` returns the most recent `limit` messages, for context windows."""
         data = await self._request(
-            "GET", f"/rooms/{room_id}/messages", params={"after": after, "limit": limit}
+            "GET",
+            f"/rooms/{room_id}/messages",
+            params={"after": after, "limit": limit, "tail": tail},
         )
         return data["messages"]
 

@@ -14,6 +14,8 @@ from collections.abc import AsyncIterator
 from ..models import EventKind, now
 
 MAX_QUEUE = 256
+MAX_PENDING = 1024
+"""Cap on events buffered before the bus is bound to a loop (CLI and embedded use)."""
 
 
 class EventBus:
@@ -34,7 +36,10 @@ class EventBus:
         event = {"kind": str(kind), "at": now(), **payload}
         loop = self._loop
         if loop is None:
+            # Nobody is listening yet (CLI, embedding, tests). Keep a bounded tail so a
+            # long-lived unbound Store cannot leak every event it ever published.
             self._pending.append((target, event))
+            del self._pending[:-MAX_PENDING]
             return
         try:
             running = asyncio.get_running_loop()

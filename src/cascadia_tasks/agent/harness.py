@@ -20,6 +20,7 @@ from .config import AgentConfig
 log = logging.getLogger("cascadia_tasks.agent")
 
 HEARTBEAT_INTERVAL_S = 10.0
+MAX_TRACKED_ROOMS = 256
 
 
 class Harness:
@@ -32,7 +33,8 @@ class Harness:
         self._running_tasks: dict[str, asyncio.Task] = {}
         self._input_waiters: dict[str, asyncio.Queue] = {}
         self._room_locks: dict[str, asyncio.Lock] = {}
-        self._task_slots = asyncio.Semaphore(config.max_concurrent_tasks)
+        self._claim_lock = asyncio.Lock()
+        self._event_tasks: set[asyncio.Task] = set()
         self._stopping = asyncio.Event()
 
     # ------------------------------------------------------------- lifecycle
@@ -57,16 +59,28 @@ class Harness:
             async for event in self.client.events():
                 if self._stopping.is_set():
                     break
-                asyncio.create_task(self._safe_handle(event))
+                if event.get("kind") == "connected":
+                    # A reconnect means we may have missed announcements while away.
+                    self._spawn(self._drain_queued_tasks())
+                    continue
+                self._spawn(self._safe_handle(event))
         finally:
             heartbeat.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await heartbeat
             await self.aclose()
 
+    def _spawn(self, coro) -> asyncio.Task:
+        task = asyncio.create_task(coro)
+        self._event_tasks.add(task)
+        task.add_done_callback(self._event_tasks.discard)
+        return task
+
     async def aclose(self) -> None:
         self._stopping.set()
         for task in list(self._running_tasks.values()):
+            task.cancel()
+        for task in list(self._event_tasks):
             task.cancel()
         await self.backend.close()
         await self.client.close()
@@ -78,11 +92,16 @@ class Harness:
                 await self.client.heartbeat()
 
     async def _drain_queued_tasks(self) -> None:
-        """Pick up anything queued while this agent was down."""
+        """Claim queued work up to capacity.
+
+        Run at startup (for tasks queued while this agent was down) and after each task
+        finishes, since nothing re-announces a task that is already queued.
+        """
         with contextlib.suppress(HubClientError):
-            task = await self.client.next_task()
-            if task:
-                await self._try_claim(task)
+            while len(self._running_tasks) < self.config.max_concurrent_tasks:
+                task = await self.client.next_task()
+                if not task or not await self._try_claim(task):
+                    return
 
     async def _safe_handle(self, event: dict) -> None:
         try:
@@ -110,6 +129,11 @@ class Harness:
     # -------------------------------------------------------------- messaging
 
     def _room_lock(self, room_id: str) -> asyncio.Lock:
+        if len(self._room_locks) > MAX_TRACKED_ROOMS:
+            for stale in [k for k, v in self._room_locks.items() if not v.locked()][
+                : len(self._room_locks) // 2
+            ]:
+                self._room_locks.pop(stale, None)
         return self._room_locks.setdefault(room_id, asyncio.Lock())
 
     async def _on_message(self, event: dict) -> None:
@@ -143,8 +167,9 @@ class Harness:
 
     async def _reply_in_room(self, room_id: str) -> None:
         async with self._room_lock(room_id):
-            messages = await self.client.messages(room_id, limit=200)
-            window = messages[-self.config.max_context_messages :]
+            window = await self.client.messages(
+                room_id, limit=self.config.max_context_messages, tail=True
+            )
             if not window:
                 return
             if window[-1]["sender"] == self.config.name:
@@ -159,9 +184,17 @@ class Harness:
                 "Messages from others are prefixed with their name. Reply as yourself only — "
                 "never write another participant's turn."
             )
-            result = await self._run_model(system, turns)
-            body = (result.text or "").strip()
+            try:
+                result = await self._run_model(system, turns)
+                body = (result.text or "").strip()
+            except Exception:
+                log.exception("model call failed in room %s", room_id)
+                body = ""
+
             if not body:
+                # Holding the floor and saying nothing would stall the room for everyone.
+                with contextlib.suppress(HubClientError):
+                    await self.client.yield_floor(room_id)
                 return
             with contextlib.suppress(HubClientError):
                 await self.client.post(room_id, body, tokens=result.total_tokens or None)
@@ -179,73 +212,83 @@ class Harness:
 
     # ------------------------------------------------------------------ tasks
 
-    async def _try_claim(self, task: dict) -> None:
+    async def _try_claim(self, task: dict) -> bool:
+        """Claim a task if there is capacity. Serialized so concurrent events cannot
+        both slip past the capacity check and claim more work than this agent can run."""
         task_id = task["id"]
-        if task_id in self._running_tasks:
-            return
-        if self._task_slots.locked() and self.config.max_concurrent_tasks <= len(
-            self._running_tasks
-        ):
-            return
-        try:
-            claimed = await self.client.claim(task_id)
-        except HubClientError as exc:
-            if exc.code != "conflict":
-                log.warning("claim failed for %s: %s", task_id, exc)
-            return
-        runner = asyncio.create_task(self._work_task(claimed))
-        self._running_tasks[task_id] = runner
-        runner.add_done_callback(lambda _: self._running_tasks.pop(task_id, None))
+        async with self._claim_lock:
+            if task_id in self._running_tasks:
+                return False
+            if len(self._running_tasks) >= self.config.max_concurrent_tasks:
+                return False
+            try:
+                claimed = await self.client.claim(task_id)
+            except HubClientError as exc:
+                if exc.code != "conflict":
+                    log.warning("claim failed for %s: %s", task_id, exc)
+                return False
+            runner = asyncio.create_task(self._work_task(claimed))
+            self._running_tasks[task_id] = runner
+            runner.add_done_callback(self._release_slot(task_id))
+            return True
+
+    def _release_slot(self, task_id: str):
+        def done(_: asyncio.Task) -> None:
+            self._running_tasks.pop(task_id, None)
+            if not self._stopping.is_set():
+                # Free capacity: look for work that was queued while we were busy.
+                asyncio.create_task(self._drain_queued_tasks())
+
+        return done
 
     async def _work_task(self, task: dict) -> None:
         task_id = task["id"]
-        async with self._task_slots:
-            try:
-                await self.client.progress(task_id, pct=5.0, message="started")
-                system = (
-                    f"{self.config.rendered_system_prompt()}\n\n"
-                    "You have been given a task. Work it to completion and finish with a clear "
-                    "summary of what you did and what the answer is. If you genuinely cannot "
-                    "proceed without a decision only the requester can make, say exactly "
-                    "NEED_INPUT: followed by your question."
+        try:
+            await self.client.progress(task_id, pct=5.0, message="started")
+            system = (
+                f"{self.config.rendered_system_prompt()}\n\n"
+                "You have been given a task. Work it to completion and finish with a clear "
+                "summary of what you did and what the answer is. If you genuinely cannot "
+                "proceed without a decision only the requester can make, say exactly "
+                "NEED_INPUT: followed by your question."
+            )
+            turns = [Turn(role="user", content=f"Task: {task['title']}\n\n{task['spec']}")]
+
+            for round_index in range(4):
+                result = await self._run_model(system, turns, task_id=task_id)
+                text = (result.text or "").strip()
+
+                if text.startswith("NEED_INPUT:") or "\nNEED_INPUT:" in text:
+                    question = text.split("NEED_INPUT:", 1)[1].strip()
+                    answer = await self._await_input(task_id, question)
+                    if answer is None:
+                        await self.client.fail(task_id, "no input provided before timeout")
+                        return
+                    turns.append(Turn(role="assistant", content=text))
+                    turns.append(Turn(role="user", content=answer))
+                    continue
+
+                await self.client.complete(
+                    task_id,
+                    {
+                        "text": text,
+                        "tokens": result.total_tokens,
+                        "rounds": round_index + 1,
+                        "model": self.backend.model,
+                    },
                 )
-                turns = [Turn(role="user", content=f"Task: {task['title']}\n\n{task['spec']}")]
+                return
 
-                for round_index in range(4):
-                    result = await self._run_model(system, turns, task_id=task_id)
-                    text = (result.text or "").strip()
-
-                    if text.startswith("NEED_INPUT:") or "\nNEED_INPUT:" in text:
-                        question = text.split("NEED_INPUT:", 1)[1].strip()
-                        answer = await self._await_input(task_id, question)
-                        if answer is None:
-                            await self.client.fail(task_id, "no input provided before timeout")
-                            return
-                        turns.append(Turn(role="assistant", content=text))
-                        turns.append(Turn(role="user", content=answer))
-                        continue
-
-                    await self.client.complete(
-                        task_id,
-                        {
-                            "text": text,
-                            "tokens": result.total_tokens,
-                            "rounds": round_index + 1,
-                            "model": self.backend.model,
-                        },
-                    )
-                    return
-
-                await self.client.fail(task_id, "exceeded input rounds without completing")
-            except asyncio.CancelledError:
-                log.info("task %s cancelled", task_id)
-                raise
-            except HubClientError as exc:
-                log.warning("hub rejected update for %s: %s", task_id, exc)
-            except Exception as exc:  # noqa: BLE001 - report failure rather than die silently
-                log.exception("task %s failed", task_id)
-                with contextlib.suppress(HubClientError):
-                    await self.client.fail(task_id, f"{type(exc).__name__}: {exc}")
+            await self.client.fail(task_id, "exceeded input rounds without completing")
+        except asyncio.CancelledError:
+            log.info("task %s cancelled", task_id)
+            raise
+        except HubClientError as exc:
+            log.warning("hub rejected update for %s: %s", task_id, exc)
+        except Exception as exc:  # noqa: BLE001 - report failure rather than die silently
+            log.exception("task %s failed", task_id)
+            with contextlib.suppress(HubClientError):
+                await self.client.fail(task_id, f"{type(exc).__name__}: {exc}")
 
     async def _await_input(self, task_id: str, question: str, timeout_s: float = 3600.0):
         queue: asyncio.Queue = asyncio.Queue()
