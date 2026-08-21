@@ -310,3 +310,65 @@ def test_agents_see_the_end_of_a_long_conversation_not_the_start(fleet: Store) -
     assert tail[-1].body == "m249"
     assert tail[0].body == "m220"
     assert [m.seq for m in tail] == sorted(m.seq for m in tail)
+
+
+def test_the_goal_seed_may_name_the_stop_phrase_without_triggering_it(fleet: Store) -> None:
+    """start_dialogue seeds a goal like 'when you agree, say AGREED' — the seed must not
+    archive the room it just opened. Only a participant actually saying it later does."""
+    room = fleet.create_room(
+        "dialogue", "claude:main", ["alpha", "beta"], RoomPolicy(stop_phrase="AGREED")
+    )
+    fleet.post_message(
+        room.id, "claude:main", "Debate, then say AGREED when done.", data={"role": "goal"}
+    )
+    assert not fleet.require_room(room.id).archived
+
+    fleet.post_message(room.id, "alpha", "fine — AGREED")
+    assert fleet.require_room(room.id).archived_reason == "stop_phrase"
+
+
+def test_the_sweep_renudges_an_online_holder_in_a_silent_room(fleet: Store) -> None:
+    """A floor grant delivered before the seed message existed is unusable; the sweep
+    must re-send it rather than leave the dialogue wedged at birth."""
+    from farmteam.models import EventKind, TurnPolicy
+
+    room = fleet.create_room(
+        "dialogue",
+        "claude:main",
+        ["alpha", "beta"],
+        RoomPolicy(turn_policy=TurnPolicy.ROUND_ROBIN),
+    )
+    fleet.post_message(room.id, "claude:main", "the goal", data={"role": "goal"})
+    assert fleet._floor_holder(room.id) == "alpha"
+
+    with fleet._lock:
+        fleet._db.execute(
+            "UPDATE rooms SET last_activity = last_activity - 60 WHERE id = ?", (room.id,)
+        )
+        fleet._db.commit()
+
+    grants: list[dict] = []
+    original = fleet.bus.publish
+
+    def spy(target, kind, payload):
+        if str(kind) == str(EventKind.FLOOR_GRANTED):
+            grants.append({"target": target, **payload})
+        original(target, kind, payload)
+
+    fleet.bus.publish = spy
+    stats = fleet.sweep()
+    assert stats["floors_recovered"] == 1
+    assert grants and grants[0]["target"] == "alpha"
+    assert fleet._floor_holder(room.id) == "alpha"  # nudged, not advanced
+
+
+def test_room_dict_exposes_the_floor_holder(fleet: Store) -> None:
+    from farmteam.models import TurnPolicy
+
+    room = fleet.create_room(
+        "dialogue",
+        "claude:main",
+        ["alpha"],
+        RoomPolicy(turn_policy=TurnPolicy.ROUND_ROBIN),
+    )
+    assert fleet.require_room(room.id).to_dict()["floor_holder"] == "alpha"

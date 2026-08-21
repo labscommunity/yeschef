@@ -93,12 +93,13 @@ def replay(payload: dict, console, options: ReplayOptions | None = None) -> None
     for message in payload.get("messages", []):
         sender = message["sender"]
         color = colors.get(sender, PALETTE[0])
+        display = _display_name(sender) if color == HUMAN_COLOR else sender
         if not options.no_delay and previous_at is not None:
             gap = max(0.0, (message["created_at"] - previous_at)) / max(options.speed, 0.01)
             time.sleep(min(gap, options.max_gap_s))
         previous_at = message["created_at"]
 
-        console.print(f"[bold {color}]{sender}[/bold {color}]: ", end="")
+        console.print(f"[bold {color}]{display}[/bold {color}]: ", end="")
         _stream_body(console, message["body"], options)
         console.print()
 
@@ -107,6 +108,14 @@ def replay(payload: dict, console, options: ReplayOptions | None = None) -> None
     if reason:
         footer += f" · ended by {reason}"
     console.print(f"\n[dim]{footer}[/dim]")
+
+
+def _display_name(identity: str) -> str:
+    """Show the human as their bare name; `claude:operator:tate` is transport detail."""
+    name = identity
+    for prefix in ("claude:", "operator:"):
+        name = name.removeprefix(prefix)
+    return name or identity
 
 
 def _stream_body(console, body: str, options: ReplayOptions) -> None:

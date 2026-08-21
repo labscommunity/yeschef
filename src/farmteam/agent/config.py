@@ -72,5 +72,6 @@ class AgentConfig:
         return self.system_prompt.format(name=self.name, node=self.node)
 
     def backend_label(self) -> str:
-        kind = self.backend.get("type", "openai_compat")
+        """Prefer the detected runtime name (ollama, vllm) — it is what a human means."""
+        kind = self.backend.get("runtime") or self.backend.get("type", "openai_compat")
         return f"{kind}/{self.backend.get('model', 'unknown')}"

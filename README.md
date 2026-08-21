@@ -8,7 +8,15 @@ farmteam turns them into a roster Claude Code can actually manage: dispatch a ta
 working, check on it whenever — from any session, days later. Your ace does the
 thinking; the farm team does the reps.
 
-<!-- demo GIF: dialogue with live human interjection — docs/demo.gif -->
+![Two local models plan this exact demo while the human interjects mid-conversation](docs/demo.gif)
+
+*Real conversation, not a script: two local models on one of our GPU boxes planning this
+exact GIF — and the human typing into the middle of it. The transcript ships in this repo;
+after install, watch the identical conversation yourself:*
+
+```bash
+farmteam replay docs/demo.json
+```
 
 ```
    Claude Code ──MCP/HTTP──▶ ┌─────────┐ ◀──REST+SSE── worker ──▶ Ollama  (office-mac)

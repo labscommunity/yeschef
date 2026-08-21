@@ -156,7 +156,12 @@ class Harness:
             return
         policy = room.get("policy") or {}
         if policy.get("turn_policy") == TurnPolicy.ROUND_ROBIN:
-            return  # replies are driven by floor grants
+            # Replies are driven by floor grants — but a grant can arrive before the
+            # room's first message exists and be unusable. If the hub still shows us
+            # holding the floor when a message lands, that message is our cue.
+            if room.get("floor_holder") == self.config.name:
+                await self._reply_in_room(room_id)
+            return
         # A direct message is addressed to me by definition — always answer it, whatever
         # the group-room reply policy is. `reply_when` governs multi-party rooms only.
         if not room.get("is_dm"):

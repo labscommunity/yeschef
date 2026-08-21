@@ -37,6 +37,8 @@ from .events import EventBus
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 MAX_TASK_ATTEMPTS = 2
+FLOOR_NUDGE_S = 20.0
+"""Re-send a floor grant when its online holder has said nothing for this long."""
 
 
 def estimate_tokens(text: str) -> int:
@@ -313,6 +315,7 @@ class Store:
             archived=bool(row["archived"]),
             archived_reason=row["archived_reason"],
             dm_key=row["dm_key"],
+            floor_holder=row["floor_holder"],
             created_at=row["created_at"],
             members=members,
         )
@@ -550,10 +553,10 @@ class Store:
             EventKind.MESSAGE,
             {"message": message.to_dict(), "room_topic": room.topic},
         )
-        self._enforce_room_policy(room_id, body)
+        self._enforce_room_policy(room_id, body, data)
         return message
 
-    def _enforce_room_policy(self, room_id: str, body: str) -> None:
+    def _enforce_room_policy(self, room_id: str, body: str, data: dict | None = None) -> None:
         """Bound every room by construction: stop phrase, message cap, token budget."""
         room = self.get_room(room_id)
         if room is None or room.archived:
@@ -563,7 +566,10 @@ class Store:
             row = self._db.execute(
                 "SELECT message_count, total_tokens FROM rooms WHERE id = ?", (room_id,)
             ).fetchone()
-        if policy.stop_phrase and policy.stop_phrase in body:
+        # The seed goal legitimately *names* the stop phrase ("when you agree, say X"),
+        # so it must not trigger it — only a participant actually saying it later does.
+        is_goal_seed = bool(data) and data.get("role") == "goal"
+        if policy.stop_phrase and policy.stop_phrase in body and not is_goal_seed:
             self.archive_room(room_id, "stop_phrase")
         elif policy.max_messages is not None and row["message_count"] >= policy.max_messages:
             self.archive_room(room_id, "max_messages")
@@ -1133,15 +1139,19 @@ class Store:
                 continue
             if policy.turn_policy is TurnPolicy.ROUND_ROBIN:
                 stats["floors_recovered"] += self._recover_floor(
-                    row["id"], row["floor_holder"], ref
+                    row["id"], row["floor_holder"], ref, row["last_activity"]
                 )
         return stats
 
-    def _recover_floor(self, room_id: str, holder: str | None, ref: float) -> int:
-        """Hand the floor on when its holder cannot use it.
+    def _recover_floor(
+        self, room_id: str, holder: str | None, ref: float, last_activity: float = 0.0
+    ) -> int:
+        """Hand the floor on — or nudge it — when a dialogue has gone quiet.
 
-        A dialogue is otherwise dead until the idle timeout if the agent holding the
-        turn went offline, or if its FLOOR_GRANTED event was dropped in transit.
+        Three stall shapes: no holder was ever seeded; the holder went offline; or the
+        holder is online but its FLOOR_GRANTED event was lost (e.g. delivered before the
+        seed message existed). The last one gets a re-grant, which the harness treats
+        idempotently.
         """
         room = self.get_room(room_id)
         if room is None or room.archived:
@@ -1155,6 +1165,9 @@ class Store:
         agent = self.get_agent(holder)
         if agent is None or ref - agent.last_seen > HEARTBEAT_TTL_S:
             self._advance_floor(room, holder)
+            return 1
+        if last_activity and ref - last_activity > FLOOR_NUDGE_S:
+            self._grant_floor(room, holder)  # online holder, silent room: nudge again
             return 1
         return 0
 

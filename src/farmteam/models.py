@@ -240,6 +240,7 @@ class Room:
     archived: bool = False
     archived_reason: str | None = None
     dm_key: str | None = None
+    floor_holder: str | None = None
     created_at: float = 0.0
     members: list[str] = field(default_factory=list)
 
@@ -250,6 +251,7 @@ class Room:
             "created_by": self.created_by,
             "open": self.open,
             "is_dm": self.dm_key is not None,
+            "floor_holder": self.floor_holder,
             "policy": self.policy.to_dict(),
             "archived": self.archived,
             "archived_reason": self.archived_reason,

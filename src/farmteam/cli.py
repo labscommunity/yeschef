@@ -159,9 +159,10 @@ def up(
         False, "--open", help="Skip token generation — anyone on the network can drive the hub."
     ),
     no_wire: bool = typer.Option(False, "--no-wire", help="Do not touch the Claude Code config."),
-    db: str = typer.Option("~/.farmteam/hub.db", help="SQLite path."),
+    db: str = typer.Option(None, help="SQLite path (default: <farmteam home>/hub.db)."),
 ) -> None:
     """Start the hub, wire it into Claude Code, and print the worker join command."""
+    db = db or str(settings.home() / "hub.db")
     cfg = settings.load()
     if not open_mode:
         cfg.admin_token = cfg.admin_token or secrets.token_urlsafe(24)
@@ -278,6 +279,7 @@ def join(
     token = token or cfg.register_token
     name = name or socket.gethostname().split(".")[0]
 
+    runtime: str | None = None
     if not base_url:
         console.print("probing for a local model server…")
         detected = autodetect()
@@ -289,6 +291,7 @@ def join(
             )
             raise typer.Exit(1)
         base_url = detected.base_url
+        runtime = detected.runtime
         model = detected.pick_model(model)
         console.print(
             f"[green]✓[/green] found [bold]{detected.runtime}[/bold] at {base_url}"
@@ -300,6 +303,8 @@ def join(
         raise typer.Exit(1)
 
     backend_cfg = {"type": backend, "base_url": base_url, "model": model}
+    if runtime and runtime != "openai_compat":
+        backend_cfg["runtime"] = runtime
     console.print("verifying the model answers…")
     ok, message = asyncio.run(preflight(backend_cfg))
     if not ok:
@@ -343,6 +348,8 @@ def join(
             "--backend",
             backend,
         ]
+        if runtime:
+            command += ["--runtime", runtime]
         for extra in tags:
             command += ["--tag", extra]
         if token:
@@ -766,10 +773,11 @@ def install_skill(
 def hub_serve(
     host: str = typer.Option("0.0.0.0"),
     port: int = typer.Option(8787),
-    db: str = typer.Option("~/.farmteam/hub.db"),
+    db: str = typer.Option(None, help="SQLite path (default: <farmteam home>/hub.db)."),
 ) -> None:
     """Run the hub in the foreground (advanced; `up` wraps this with setup)."""
     cfg = settings.load()
+    db = db or str(settings.home() / "hub.db")
     console.print(f"[bold]farmteam hub[/bold] → http://{host}:{port}  (MCP at /mcp)")
     if not cfg.admin_token and not cfg.register_token:
         console.print("[yellow]open mode — no tokens set.[/yellow]")
@@ -802,17 +810,21 @@ def _run_detached_worker(
     base_url: str = typer.Option(...),
     model: str = typer.Option(...),
     backend: str = typer.Option("openai_compat"),
+    runtime: str = typer.Option(None),
     token: str = typer.Option(None),
     tag: list[str] = typer.Option(None, "--tag"),
 ) -> None:
     """Internal entry point used by `join --detach`."""
+    backend_cfg = {"type": backend, "base_url": base_url, "model": model}
+    if runtime:
+        backend_cfg["runtime"] = runtime
     _run_worker(
         AgentConfig(
             name=name,
             hub=hub,
             tags=list(tag or []),
             register_token=token,
-            backend={"type": backend, "base_url": base_url, "model": model},
+            backend=backend_cfg,
         ),
         verbose=False,
     )
