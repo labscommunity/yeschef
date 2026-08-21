@@ -412,3 +412,37 @@ async def test_an_agent_reclaims_its_name_after_a_restart(tmp_path) -> None:
             with pytest.raises(Exception) as exc:
                 await impostor.register(node="elsewhere")
             assert "forbidden" in str(exc.value).lower()
+
+
+async def test_a_silent_event_stream_is_treated_as_dead() -> None:
+    """A hub restart can leave a half-open socket that never errors. The client's read
+    timeout must treat prolonged silence as a dead stream instead of listening forever —
+    that wedge left a live worker heartbeating while deaf to every task announcement."""
+    import asyncio as aio
+
+    from farmteam.sdk import AgentClient
+    from farmteam.sdk import client as sdk_client
+
+    async def silent_server(reader, writer):
+        await reader.read(1024)  # accept the request, say the bare minimum, go quiet
+        writer.write(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n")
+        await writer.drain()
+        with pytest.raises(aio.CancelledError):
+            await aio.sleep(30)
+
+    server = await aio.start_server(silent_server, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    original = sdk_client.STREAM_STALL_S
+    sdk_client.STREAM_STALL_S = 0.5
+    client = AgentClient(f"http://127.0.0.1:{port}", "w", token="t")
+    try:
+        with pytest.raises(Exception) as exc:
+            async with aio.timeout(8):
+                async for _ in client.events(reconnect=False):
+                    pass
+        assert "ReadTimeout" in type(exc.value).__name__
+    finally:
+        sdk_client.STREAM_STALL_S = original
+        await client.close()
+        server.close()
+        # No wait_closed(): in 3.12 it blocks on the deliberately-sleeping handler.

@@ -11,6 +11,9 @@ from typing import Any
 
 import httpx
 
+STREAM_STALL_S = 45.0
+"""3× the hub keepalive interval — silence beyond this means the stream is dead."""
+
 
 class HubClientError(RuntimeError):
     def __init__(self, code: str, message: str, status: int) -> None:
@@ -130,11 +133,22 @@ class AgentClient:
         return response.json()
 
     async def events(self, reconnect: bool = True) -> AsyncIterator[dict]:
-        """Stream hub events for this agent. The open stream is also the heartbeat."""
+        """Stream hub events for this agent. The open stream is also the heartbeat.
+
+        The hub emits a keepalive at least every ~15s, so a stream that goes silent for
+        STREAM_STALL_S is dead even if the socket looks open — a hub restart can leave
+        a half-open connection that never errors, and an agent wedged on it heartbeats
+        happily while being deaf to every task announcement. Silence forces a reconnect.
+        """
         backoff = 1.0
         while True:
+            # The read timeout IS the stall detector: httpx raises ReadTimeout when the
+            # connection goes silent longer than the hub's keepalive cadence allows,
+            # which tears the connection down cleanly (unlike cancelling a read, which
+            # can hang in aclose() draining a dead socket).
+            stall = httpx.Timeout(connect=10.0, read=STREAM_STALL_S, write=10.0, pool=10.0)
             try:
-                async with httpx.AsyncClient(timeout=None) as stream_client:
+                async with httpx.AsyncClient(timeout=stall) as stream_client:
                     async with stream_client.stream(
                         "GET",
                         f"{self.hub_url}/api/v1/agents/{self.name}/events",
