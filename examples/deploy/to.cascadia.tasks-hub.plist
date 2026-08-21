@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Hub service for the Mac Mini orchestrator.
+
+    cp examples/deploy/to.cascadia.tasks-hub.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/to.cascadia.tasks-hub.plist
+
+  Bind to the LAN/Tailscale interface only. Never expose this through a Tailscale
+  funnel: any caller reaching it can dispatch work to every node on the fleet.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>to.cascadia.tasks-hub</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/uv</string>
+        <string>run</string>
+        <string>--directory</string>
+        <string>/Users/tatef/Workspaces/cascadia-tasks</string>
+        <string>cascadia-tasks</string>
+        <string>hub</string>
+        <string>serve</string>
+        <string>--host</string>
+        <string>0.0.0.0</string>
+        <string>--port</string>
+        <string>8787</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>CASCADIA_TASKS_DB</key>
+        <string>/Users/tatef/.cascadia-tasks/hub.db</string>
+        <!-- Set these to require a token; leave unset for an open LAN hub.
+        <key>CASCADIA_TASKS_ADMIN_TOKEN</key>
+        <string>...</string>
+        <key>CASCADIA_TASKS_REGISTER_TOKEN</key>
+        <string>...</string>
+        -->
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/tatef/.cascadia-tasks/hub.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/tatef/.cascadia-tasks/hub.err.log</string>
+</dict>
+</plist>

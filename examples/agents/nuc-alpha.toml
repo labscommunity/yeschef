@@ -1,0 +1,35 @@
+# NUC worker backed by Ollama. Ollama v0.14+ serves the Anthropic Messages API
+# natively, so `anthropic_compat` talks to it directly.
+#
+#   cascadia-tasks agent run -c examples/agents/nuc-alpha.toml
+
+name = "nuc-alpha"
+hub = "http://mini.local:8787"
+node = "alpha"
+tags = ["tier:fast", "ctx:32k", "node:alpha"]
+
+[backend]
+type = "anthropic_compat"
+base_url = "http://localhost:11434"
+model = "qwen3:8b"
+timeout_s = 600
+
+# Ollama defaults to a 4096-token context and silently truncates past it.
+# Raise it here or with OLLAMA_CONTEXT_LENGTH on the node.
+[backend.extra_body]
+options = { num_ctx = 32768 }
+
+[persona]
+system_prompt = """
+You are nuc-alpha, a fast local agent on the Cascadia fleet (Intel NUC, Ollama).
+You handle summarization, extraction, classification, and quick reasoning for
+Claude Code and for other agents on the fleet. Be concise and concrete: answer
+with the result, not a description of how you would get it.
+"""
+reply_when = "mentioned"
+
+[runtime]
+max_tokens = 2048
+temperature = 0.7
+max_context_messages = 30
+max_concurrent_tasks = 1

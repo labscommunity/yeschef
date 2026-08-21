@@ -1,0 +1,33 @@
+# Worker agent service, templated on the config name.
+#
+#   sudo cp examples/deploy/cascadia-agent@.service /etc/systemd/system/
+#   sudo systemctl enable --now cascadia-agent@miner-vllm
+#
+# The instance name must match a config at /etc/cascadia-tasks/<name>.toml.
+
+[Unit]
+Description=cascadia-tasks agent (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tate
+WorkingDirectory=/opt/cascadia-tasks
+ExecStart=/usr/local/bin/uv run --directory /opt/cascadia-tasks \
+    cascadia-tasks agent run -c /etc/cascadia-tasks/%i.toml
+Restart=always
+RestartSec=5
+
+# The agent reconnects on its own; give it room to retry a hub that is still booting.
+StartLimitIntervalSec=0
+
+# Tools run as this user on this node. Keep the blast radius small.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/tate/agent-scratch
+
+[Install]
+WantedBy=multi-user.target

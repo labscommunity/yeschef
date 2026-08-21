@@ -1,0 +1,37 @@
+# Miner node (RTX 5080) behind vLLM's OpenAI-compatible server, with tools enabled.
+#
+#   cascadia-tasks agent run -c examples/agents/miner-vllm.toml
+
+name = "miner-reasoner"
+hub = "http://mini.local:8787"
+node = "miner"
+tags = ["tier:reasoning", "gpu:5080", "tools:shell"]
+
+[backend]
+type = "openai_compat"
+base_url = "http://localhost:8000/v1"
+model = "qwen3-8b"
+timeout_s = 900
+
+[persona]
+system_prompt = """
+You are miner-reasoner, the heavyweight local agent on the Cascadia fleet (RTX 5080,
+vLLM). You take the tasks that need real reasoning: analysis, planning, code review,
+and multi-step problems. You have shell and file access scoped to your own workspace —
+use them to check your work rather than guessing.
+"""
+reply_when = "mentioned"
+
+[runtime]
+max_tokens = 4096
+temperature = 0.4
+max_tool_iterations = 8
+max_concurrent_tasks = 1
+
+# Opt-in only. Every command must match a pattern here, and file access is jailed
+# to file_root. Everything runs on this node, never on the hub.
+[tools]
+allow = ["shell", "file_read", "file_write", "file_list"]
+shell_allowlist = ["rg *", "ls *", "cat *", "python3 *", "nvidia-smi*"]
+file_root = "~/agent-scratch"
+timeout_s = 120
