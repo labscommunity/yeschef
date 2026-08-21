@@ -3,22 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Protocol
 
-
-@dataclass(slots=True)
-class ToolCall:
-    id: str
-    name: str
-    arguments: dict[str, Any]
-
-
-@dataclass(slots=True)
-class ToolResult:
-    call_id: str
-    name: str
-    content: str
-    is_error: bool = False
+from ...models import ToolCall, ToolResult
 
 
 @dataclass(slots=True)
@@ -58,3 +45,6 @@ class Backend(Protocol):
     ) -> ChatResult: ...
 
     async def close(self) -> None: ...
+
+
+__all__ = ["Backend", "ChatResult", "ToolCall", "ToolResult", "Turn"]

@@ -114,6 +114,27 @@ DEFAULT_TASK_TIMEOUT_S = 3600.0
 
 
 @dataclass(slots=True)
+class ToolCall:
+    """A model's request to run a worker-side tool.
+
+    Lives here rather than in `agent.backends` so `tools` and `agent` can both use it
+    without importing each other.
+    """
+
+    id: str
+    name: str
+    arguments: dict
+
+
+@dataclass(slots=True)
+class ToolResult:
+    call_id: str
+    name: str
+    content: str
+    is_error: bool = False
+
+
+@dataclass(slots=True)
 class RoomPolicy:
     """Hub-enforced guards. Every autonomous room is bounded by construction."""
 

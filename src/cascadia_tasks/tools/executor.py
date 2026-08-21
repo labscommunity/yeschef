@@ -15,9 +15,12 @@ from pathlib import Path
 
 import httpx
 
-from ..agent.backends.base import ToolCall, ToolResult
+from ..models import ToolCall, ToolResult
 
 MAX_OUTPUT_CHARS = 20_000
+
+SHELL_METACHARACTERS = (";", "&&", "||", "|", "`", "$(", ">", "<", "\n", "&")
+"""Anything that could chain or redirect a second command past the allowlist."""
 
 
 @dataclass(slots=True)
@@ -147,15 +150,27 @@ class ToolExecutor:
         )
 
     def _shell_allowed(self, command: str) -> bool:
+        """Match against the allowlist, but never let a wildcard smuggle in a second command.
+
+        A pattern like `rg *` is meant to allow ripgrep, not `rg x; rm -rf /` — and plain
+        fnmatch would happily match both. Commands carrying shell metacharacters are
+        therefore refused unless the operator put a metacharacter in a pattern themselves.
+        """
         if not self.config.shell_allowlist:
             return False
-        if any(sep in command for sep in (";", "&&", "||", "|", "`", "$(", ">", "<")):
-            return any(fnmatch.fnmatch(command, pat) for pat in self.config.shell_allowlist)
+        if any(token in command for token in SHELL_METACHARACTERS):
+            deliberate = any(
+                token in pattern
+                for pattern in self.config.shell_allowlist
+                for token in SHELL_METACHARACTERS
+            )
+            if not deliberate:
+                return False
         try:
             shlex.split(command)
         except ValueError:
             return False
-        return any(fnmatch.fnmatch(command, pat) for pat in self.config.shell_allowlist)
+        return any(fnmatch.fnmatch(command, pattern) for pattern in self.config.shell_allowlist)
 
     def _resolve(self, raw: str) -> Path:
         if self.root is None:
