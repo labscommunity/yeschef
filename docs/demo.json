@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "room": {
+    "topic": "dialogue: You two are planning the 30-second README demo GIF for farmt",
+    "policy": {
+      "turn_policy": "round_robin",
+      "max_messages": 12,
+      "max_total_tokens": null,
+      "idle_timeout_s": 86400.0,
+      "stop_phrase": "DEMO LOCKED"
+    },
+    "archived_reason": "max_messages"
+  },
+  "participants": {
+    "claude:tatef": {
+      "kind": "claude",
+      "backend": null,
+      "node": null
+    },
+    "fastball": {
+      "kind": "worker",
+      "backend": "ollama/qwen2.5:7b-instruct",
+      "node": "miner"
+    },
+    "closer": {
+      "kind": "worker",
+      "backend": "ollama/llama3.2:3b",
+      "node": "miner"
+    }
+  },
+  "messages": [
+    {
+      "sender": "claude:tatef",
+      "body": "You two are planning the 30-second README demo GIF for farmteam \u2014 the tool you are both running on right now. Debate what it should show, shot by shot. Propose at least two different cuts before agreeing. Keep every reply under 35 words. When you both agree on the final cut, say DEMO LOCKED.",
+      "created_at": 1787292519.275959
+    },
+    {
+      "sender": "fastball",
+      "body": "Shot 1: Tool logo appear briefly.\nShot 2: Dashboard overview with key features.\nShot 3: Code collaboration and integration.\nDEM LOCKED: Show logo, dashboard, code collaboration.",
+      "created_at": 1787292522.5302737
+    },
+    {
+      "sender": "closer",
+      "body": "fastball: I'd add a shot of the node miner running on our local agents. It would help illustrate how the tool works at scale. Can we add that to Shot 2 or make it its own separate shot?",
+      "created_at": 1787292525.401613
+    },
+    {
+      "sender": "fastball",
+      "body": "Shot 1: Tool logo appear briefly.\nShot 2: Dashboard overview with key features.\nShot 3: Node miner running on local agents.\nDEM LOCKED: Show logo, dashboard, node miner at scale.",
+      "created_at": 1787292529.6708164
+    },
+    {
+      "sender": "claude:tatef",
+      "body": "cutting in \u2014 attention cliffs at 15 seconds, not 30. One command, one payoff. What survives the cut?",
+      "created_at": 1787292531.368139
+    },
+    {
+      "sender": "fastball",
+      "body": "Shot 1: Tool logo appear briefly.\nShot 2: Key feature demo.\nDEM LOCKED: Show logo, key feature.",
+      "created_at": 1787292535.4790533
+    },
+    {
+      "sender": "closer",
+      "body": "fastball: I agree, we need to focus on a single key action or benefit that's most impactful within the time frame. For Shot 2, how about a split-screen of the dashboard and the node miner in action?",
+      "created_at": 1787292539.6016278
+    },
+    {
+      "sender": "fastball",
+      "body": "Shot 1: Tool logo appear briefly.\nShot 2: Dashboard with node miner in action side-by-side.\nDEM LOCKED: Show logo, dashboard/node miner split-screen.",
+      "created_at": 1787292543.2262006
+    },
+    {
+      "sender": "closer",
+      "body": "fastball: Excellent! To add visual interest and emphasize the collaboration aspect, I propose a text overlay on the split-screen showing Claude's local agent name and my node miner running as \"Farm Team\" \u2013",
+      "created_at": 1787292547.6259627
+    },
+    {
+      "sender": "fastball",
+      "body": "Shot 1: Tool logo appear briefly.\nShot 2: Dashboard with node miner in action side-by-side. Text: \"Claude Code | Farm Team\".\n\nDEM LOCKED: Show logo, dashboard/node miner split-screen with text.",
+      "created_at": 1787292551.6752975
+    },
+    {
+      "sender": "closer",
+      "body": "fastball: That looks sharp! How about adding a final shot (optional) of the tool's output or success message to reinforce the benefits of using our farm team?",
+      "created_at": 1787292556.1061637
+    },
+    {
+      "sender": "fastball",
+      "body": "Shot 1: Tool logo appear briefly.\nShot 2: Dashboard with node miner in action side-by-side. Text: \"Claude Code | Farm Team\".\nShot 3: Success message or output.\n\nDEM LOCKED: Show logo, dashboard/node miner split-screen, success message.",
+      "created_at": 1787292560.4140244
+    }
+  ]
+}

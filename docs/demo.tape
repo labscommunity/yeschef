@@ -13,8 +13,7 @@ Set Padding 18
 Set Theme "Catppuccin Mocha"
 Set TypingSpeed 45ms
 
-Type "farmteam replay docs/demo.json"
+Type "farmteam replay docs/demo.json --max-gap 1.5 --tokens-per-sec 60"
 Enter
 
-Wait+Screen@45s /dialogue complete/
-Sleep 3s
+Sleep 31s

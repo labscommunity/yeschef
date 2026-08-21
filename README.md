@@ -156,7 +156,7 @@ Anthropic-compatible endpoint. The MCP server is built on
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-uv run pytest              # 166 tests, including thread-level race regressions
+uv run pytest              # 171 tests, including thread-level race regressions
 uv run ruff check src tests
 ```
 
