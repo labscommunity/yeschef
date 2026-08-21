@@ -220,3 +220,40 @@ async def test_wait_task_returns_early_on_completion() -> None:
                 assert waited.data["task"]["state"] == "completed"
             finally:
                 await stop_agent(harness, runner)
+
+
+async def test_a_cli_agent_that_builds_nothing_and_talks_tool_json_fails(tmp_path) -> None:
+    """A CLI worker whose model prints tool calls as text produces an empty workspace
+    and tool-shaped prose. That must fail, not complete — the requester would otherwise
+    believe a buildout happened."""
+    command = _fake_agent_script(
+        tmp_path,
+        'print(\'{"name": "file_write", "arguments": {"path": "index.html"}}\')\n'
+        'print(\'{"name": "shell", "arguments": {"command": "ls"}}\')\n',
+    )
+    async with live_hub() as hub:
+        mcp = build_mcp(hub.store, HubConfig(db_path=":memory:", default_identity="claude:test"))
+        async with Client(mcp) as claude:
+            config = AgentConfig(
+                name="pretender",
+                hub=hub.url,
+                backend={"type": "cli", "command": command, "model": "fake/agent"},
+                tools=ToolsConfig(file_root=str(tmp_path / "scratch")),
+            )
+            harness = Harness(config)
+            runner = asyncio.create_task(harness.run())
+            await wait_for(lambda: hub.store.bus.subscriber_count("pretender"))
+            try:
+                submitted = await claude.call_tool(
+                    "submit_task", {"title": "build", "spec": "build it", "assignee": "pretender"}
+                )
+                task_id = submitted.data["task_id"]
+                await wait_for(lambda: hub.store.require_task(task_id).state == "failed")
+                assert "cannot" in hub.store.require_task(task_id).error
+            finally:
+                runner.cancel()
+                import contextlib
+
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await runner
+                await harness.aclose()

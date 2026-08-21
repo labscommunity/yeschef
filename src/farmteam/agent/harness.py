@@ -335,6 +335,21 @@ class Harness:
                 files = await self._collect_workspace(task_id, workspace)
                 if files is not None:
                     payload["files"] = files
+                if (
+                    getattr(self.backend, "uses_workspace", False)
+                    and not files
+                    and _looks_like_unexecuted_tool_calls(text)
+                ):
+                    # A CLI agent whose model prints tool calls as text builds nothing.
+                    # An empty workspace plus tool-call-shaped prose is that signature.
+                    await self.client.fail(
+                        task_id,
+                        "the CLI agent produced no files and its output reads like "
+                        "unexecuted tool calls — the underlying model likely cannot "
+                        "drive this harness's tools. Try a stronger or tool-capable "
+                        "model.",
+                    )
+                    return
                 await self.client.complete(task_id, payload)
                 return
 
