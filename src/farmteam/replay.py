@@ -86,8 +86,12 @@ def replay(payload: dict, console, options: ReplayOptions | None = None) -> None
     )
     if header:
         console.print(f"[bold]{header}[/bold]")
-    if room.get("topic"):
-        console.print(f"[dim]goal: {room['topic']}[/dim]\n")
+    topic = room.get("topic") or ""
+    if topic and not topic.startswith("dialogue: "):
+        # Dialogue rooms open with the goal as the human's first message — printing the
+        # (truncated) topic above it would just say the same thing twice.
+        console.print(f"[dim]goal: {topic}[/dim]")
+    console.print()
 
     previous_at: float | None = None
     for message in payload.get("messages", []):
