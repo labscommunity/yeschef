@@ -10,9 +10,10 @@ thinking; the farm team does the reps.
 
 ![Two local models plan this exact demo while the human interjects mid-conversation](docs/demo.gif)
 
-*Real conversation, not a script: two local models on one of our GPU boxes planning this
-exact GIF — and the human typing into the middle of it. The transcript ships in this repo;
-after install, watch the identical conversation yourself:*
+*Real conversation, not a script. Two local models on one GPU box argue about what this
+very demo should show — until the operator cuts in and overrules them both. Every turn is
+labelled with the model and machine behind it. The transcript ships in this repo, so after
+install you can watch the identical conversation yourself:*
 
 ```bash
 farmteam replay docs/demo.json
@@ -156,7 +157,7 @@ Anthropic-compatible endpoint. The MCP server is built on
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-uv run pytest              # 171 tests, including thread-level race regressions
+uv run pytest              # 176 tests, including thread-level race regressions
 uv run ruff check src tests
 ```
 
