@@ -372,3 +372,19 @@ def test_room_dict_exposes_the_floor_holder(fleet: Store) -> None:
         RoomPolicy(turn_policy=TurnPolicy.ROUND_ROBIN),
     )
     assert fleet.require_room(room.id).to_dict()["floor_holder"] == "alpha"
+
+
+def test_only_agents_can_trigger_the_stop_phrase(fleet: Store) -> None:
+    """The stop phrase is an agent convergence signal. An operator quoting it — to set
+    the rule or to nudge — must not end the room; archive_room is the deliberate exit."""
+    room = fleet.create_room(
+        "dialogue", "claude:main", ["alpha", "beta"], RoomPolicy(stop_phrase="AGREED")
+    )
+    fleet.post_message(room.id, "claude:main", "argue it out, then say AGREED")
+    assert not fleet.require_room(room.id).archived
+
+    fleet.post_message(room.id, "claude:main", "still going? say AGREED when you settle it")
+    assert not fleet.require_room(room.id).archived
+
+    fleet.post_message(room.id, "alpha", "fine — AGREED")
+    assert fleet.require_room(room.id).archived_reason == "stop_phrase"

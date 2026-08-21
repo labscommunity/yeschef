@@ -553,10 +553,12 @@ class Store:
             EventKind.MESSAGE,
             {"message": message.to_dict(), "room_topic": room.topic},
         )
-        self._enforce_room_policy(room_id, body, data)
+        self._enforce_room_policy(room_id, body, data, is_claude)
         return message
 
-    def _enforce_room_policy(self, room_id: str, body: str, data: dict | None = None) -> None:
+    def _enforce_room_policy(
+        self, room_id: str, body: str, data: dict | None = None, from_operator: bool = False
+    ) -> None:
         """Bound every room by construction: stop phrase, message cap, token budget."""
         room = self.get_room(room_id)
         if room is None or room.archived:
@@ -566,10 +568,10 @@ class Store:
             row = self._db.execute(
                 "SELECT message_count, total_tokens FROM rooms WHERE id = ?", (room_id,)
             ).fetchone()
-        # The seed goal legitimately *names* the stop phrase ("when you agree, say X"),
-        # so it must not trigger it — only a participant actually saying it later does.
-        is_goal_seed = bool(data) and data.get("role") == "goal"
-        if policy.stop_phrase and policy.stop_phrase in body and not is_goal_seed:
+        # The stop phrase is how *agents* signal they have converged. An operator who
+        # writes it — in the seed goal ("say X when you agree") or mid-conversation — is
+        # setting the rule, not ending the room; archive_room is the deliberate exit.
+        if policy.stop_phrase and policy.stop_phrase in body and not from_operator:
             self.archive_room(room_id, "stop_phrase")
         elif policy.max_messages is not None and row["message_count"] >= policy.max_messages:
             self.archive_room(room_id, "max_messages")
