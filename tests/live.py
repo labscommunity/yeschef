@@ -32,9 +32,7 @@ class LiveHub:
 
 
 @contextlib.asynccontextmanager
-async def live_hub(
-    with_mcp: bool = False, **config_kwargs
-) -> AsyncIterator[LiveHub]:
+async def live_hub(with_mcp: bool = False, **config_kwargs) -> AsyncIterator[LiveHub]:
     store = Store(":memory:", EventBus())
     config = HubConfig(db_path=":memory:", sweep_interval_s=3600.0, **config_kwargs)
     mcp_app = None

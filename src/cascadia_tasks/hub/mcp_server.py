@@ -250,9 +250,7 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
     def list_rooms(mine_only: bool = True, include_archived: bool = False) -> dict:
         """List rooms, by default only those this session participates in."""
         me = ident.current()
-        rooms = store.list_rooms(
-            agent=me if mine_only else None, include_archived=include_archived
-        )
+        rooms = store.list_rooms(agent=me if mine_only else None, include_archived=include_archived)
         return {"rooms": [r.to_dict() for r in rooms]}
 
     @mcp.tool

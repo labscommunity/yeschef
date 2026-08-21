@@ -60,9 +60,7 @@ class AgentClient:
     async def _request(
         self, method: str, path: str, *, token: str | None = None, **kwargs: Any
     ) -> dict:
-        response = await self._http.request(
-            method, path, headers=self._headers(token), **kwargs
-        )
+        response = await self._http.request(method, path, headers=self._headers(token), **kwargs)
         if response.status_code >= 400:
             try:
                 payload = response.json()["error"]
@@ -173,9 +171,7 @@ class AgentClient:
         return data["rooms"]
 
     async def join_room(self, room_id: str) -> dict:
-        return (await self._request("POST", f"/rooms/{room_id}/join", json=self._as_me({})))[
-            "room"
-        ]
+        return (await self._request("POST", f"/rooms/{room_id}/join", json=self._as_me({})))["room"]
 
     async def leave_room(self, room_id: str) -> None:
         await self._request("POST", f"/rooms/{room_id}/leave", json=self._as_me({}))

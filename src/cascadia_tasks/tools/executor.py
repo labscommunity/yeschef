@@ -184,8 +184,7 @@ class ToolExecutor:
     async def _file_list(self, call: ToolCall) -> ToolResult:
         target = self._resolve(str(call.arguments.get("path", ".")))
         entries = sorted(
-            f"{'d' if p.is_dir() else '-'} {p.relative_to(self.root)}"
-            for p in target.iterdir()
+            f"{'d' if p.is_dir() else '-'} {p.relative_to(self.root)}" for p in target.iterdir()
         )
         return ToolResult(call.id, call.name, "\n".join(entries)[:MAX_OUTPUT_CHARS] or "(empty)")
 

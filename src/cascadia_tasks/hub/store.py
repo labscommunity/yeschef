@@ -377,9 +377,7 @@ class Store:
 
     def _grant_floor(self, room: Room, holder: str | None) -> None:
         with self._lock:
-            self._db.execute(
-                "UPDATE rooms SET floor_holder = ? WHERE id = ?", (holder, room.id)
-            )
+            self._db.execute("UPDATE rooms SET floor_holder = ? WHERE id = ?", (holder, room.id))
             self._db.commit()
         if holder:
             self.bus.publish(
@@ -413,9 +411,7 @@ class Store:
     ) -> Message:
         room = self.require_room(room_id)
         if room.archived:
-            raise HubError(
-                ErrorCode.CONFLICT, f"room is archived ({room.archived_reason})", 409
-            )
+            raise HubError(ErrorCode.CONFLICT, f"room is archived ({room.archived_reason})", 409)
 
         if sender not in room.members:
             if room.open:
@@ -428,9 +424,7 @@ class Store:
         if room.policy.turn_policy is TurnPolicy.ROUND_ROBIN and not is_claude:
             holder = self._floor_holder(room_id)
             if holder is not None and holder != sender:
-                raise HubError(
-                    ErrorCode.CONFLICT, f"not your turn (floor held by '{holder}')", 409
-                )
+                raise HubError(ErrorCode.CONFLICT, f"not your turn (floor held by '{holder}')", 409)
 
         if client_msg_id:
             with self._lock:
@@ -504,9 +498,7 @@ class Store:
         elif policy.max_total_tokens is not None and row["total_tokens"] >= policy.max_total_tokens:
             self.archive_room(room_id, "max_total_tokens")
 
-    def fetch_messages(
-        self, room_id: str, after_seq: int = 0, limit: int = 100
-    ) -> list[Message]:
+    def fetch_messages(self, room_id: str, after_seq: int = 0, limit: int = 100) -> list[Message]:
         with self._lock:
             rows = self._db.execute(
                 """SELECT * FROM messages WHERE room_id = ? AND seq > ?
@@ -609,11 +601,7 @@ class Store:
             return [task.assignee]
         if not task.selector:
             return []
-        return [
-            a.name
-            for a in self.list_agents(kind=AgentKind.WORKER)
-            if a.matches(task.selector)
-        ]
+        return [a.name for a in self.list_agents(kind=AgentKind.WORKER) if a.matches(task.selector)]
 
     def _announce_task(self, task: Task) -> None:
         self.bus.publish_many(

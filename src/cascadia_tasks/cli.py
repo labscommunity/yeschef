@@ -155,14 +155,14 @@ def show_task(task_id: str, hub: str = typer.Option(None)) -> None:
     console.print_json(data=data["task"])
     table = Table("at", "kind", "payload")
     for event in data["events"]:
-        table.add_row(f"{event['created_at']:.0f}", event["kind"], json.dumps(event["payload"])[:80])
+        table.add_row(
+            f"{event['created_at']:.0f}", event["kind"], json.dumps(event["payload"])[:80]
+        )
     console.print(table)
 
 
 @app.command("rooms")
-def list_rooms(
-    include_archived: bool = typer.Option(False), hub: str = typer.Option(None)
-) -> None:
+def list_rooms(include_archived: bool = typer.Option(False), hub: str = typer.Option(None)) -> None:
     """List rooms."""
     data = _get("/api/v1/rooms", hub, include_archived=include_archived)
     table = Table("id", "topic", "members", "turns", "state")

@@ -190,9 +190,7 @@ def test_archived_rooms_reject_further_messages(fleet: Store) -> None:
 
 
 def test_idle_rooms_are_archived_by_the_sweep(fleet: Store) -> None:
-    room = fleet.create_room(
-        "idle", "claude:main", ["alpha"], RoomPolicy(idle_timeout_s=0.0)
-    )
+    room = fleet.create_room("idle", "claude:main", ["alpha"], RoomPolicy(idle_timeout_s=0.0))
     stats = fleet.sweep()
     assert stats["rooms_archived"] == 1
     assert fleet.require_room(room.id).archived_reason == "idle_timeout"

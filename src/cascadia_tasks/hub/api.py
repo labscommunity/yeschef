@@ -155,7 +155,9 @@ def build_router(store: Store, config: HubConfig) -> APIRouter:
         return {"room": store.require_room(room_id).to_dict()}
 
     @router.post("/rooms/{room_id}/join")
-    def join_room(room_id: str, payload: dict = Body(...), authorization: AuthHeader = None) -> dict:
+    def join_room(
+        room_id: str, payload: dict = Body(...), authorization: AuthHeader = None
+    ) -> dict:
         who = payload["as_agent"]
         auth.agent(who, authorization)
         return {"room": store.join_room(room_id, who).to_dict()}

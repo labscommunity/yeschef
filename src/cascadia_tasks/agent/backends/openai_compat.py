@@ -103,7 +103,9 @@ class OpenAICompatBackend:
                 args = json.loads(fn.get("arguments") or "{}")
             except json.JSONDecodeError:
                 args = {"_raw": fn.get("arguments")}
-            calls.append(ToolCall(id=raw.get("id", fn.get("name", "call")), name=fn["name"], arguments=args))
+            calls.append(
+                ToolCall(id=raw.get("id", fn.get("name", "call")), name=fn["name"], arguments=args)
+            )
         usage = data.get("usage") or {}
         return ChatResult(
             text=message.get("content") or "",

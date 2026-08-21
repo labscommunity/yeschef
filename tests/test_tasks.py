@@ -172,9 +172,7 @@ def test_sweep_fails_a_task_that_keeps_losing_its_agent(fleet: Store) -> None:
     for _ in range(2):
         fleet.claim_task(task.id, "alpha")
         with fleet._lock:
-            fleet._db.execute(
-                "UPDATE agents SET last_seen = 0 WHERE name = ?", ("alpha",)
-            )
+            fleet._db.execute("UPDATE agents SET last_seen = 0 WHERE name = ?", ("alpha",))
             fleet._db.commit()
         fleet.sweep()
     assert fleet.require_task(task.id).state is TaskState.FAILED

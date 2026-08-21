@@ -24,9 +24,7 @@ def config_from_env() -> HubConfig:
 def build_hub(config: HubConfig | None = None) -> tuple[FastAPI, Store]:
     config = config or config_from_env()
     db_path = (
-        config.db_path
-        if config.db_path == ":memory:"
-        else str(Path(config.db_path).expanduser())
+        config.db_path if config.db_path == ":memory:" else str(Path(config.db_path).expanduser())
     )
     store = Store(db_path, EventBus())
 

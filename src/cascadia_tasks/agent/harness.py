@@ -23,13 +23,12 @@ HEARTBEAT_INTERVAL_S = 10.0
 
 
 class Harness:
-    def __init__(self, config: AgentConfig) -> None:
+    def __init__(self, config: AgentConfig, backend: Backend | None = None) -> None:
+        """`backend` may be supplied directly when embedding the harness or testing."""
         self.config = config
-        self.backend: Backend = build_backend(config.backend)
+        self.backend: Backend = backend or build_backend(config.backend)
         self.tools = ToolExecutor(config.tools)
-        self.client = AgentClient(
-            config.hub, config.name, register_token=config.register_token
-        )
+        self.client = AgentClient(config.hub, config.name, register_token=config.register_token)
         self._running_tasks: dict[str, asyncio.Task] = {}
         self._input_waiters: dict[str, asyncio.Queue] = {}
         self._room_locks: dict[str, asyncio.Lock] = {}
@@ -283,9 +282,7 @@ class Harness:
                         message=f"tools: {names}",
                     )
             results: list[ToolResult] = [await self.tools.run(call) for call in result.tool_calls]
-            turns.append(
-                Turn(role="assistant", content=result.text, tool_calls=result.tool_calls)
-            )
+            turns.append(Turn(role="assistant", content=result.text, tool_calls=result.tool_calls))
             turns.append(Turn(role="user", content="", tool_results=results))
             result = await self.backend.chat(
                 system,
