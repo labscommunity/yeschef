@@ -21,6 +21,8 @@ log = logging.getLogger("cascadia_tasks.agent")
 
 HEARTBEAT_INTERVAL_S = 10.0
 MAX_TRACKED_ROOMS = 256
+TASK_ROOM_PREFIX = "room_task_"
+"""A task's room is `room_` + the task id, and task ids start with `task_`."""
 
 
 class Harness:
@@ -35,6 +37,7 @@ class Harness:
         self._room_locks: dict[str, asyncio.Lock] = {}
         self._claim_lock = asyncio.Lock()
         self._event_tasks: set[asyncio.Task] = set()
+        self._task_context: dict[str, list[str]] = {}
         self._stopping = asyncio.Event()
 
     # ------------------------------------------------------------- lifecycle
@@ -142,8 +145,14 @@ class Harness:
         room = await self.client.get_room(room_id)
         if room["archived"]:
             return
-        # A task room is driven by the task worker, not by the conversational reply path.
-        if room["id"].startswith("room_task_"):
+        if room["id"].startswith(TASK_ROOM_PREFIX):
+            # Not a conversation to reply to: it is extra context for the task in flight,
+            # which is what the hub's `task_room` tool advertises.
+            task_id = room["id"].removeprefix("room_")
+            if task_id in self._running_tasks:
+                self._task_context.setdefault(task_id, []).append(
+                    f"{message['sender']}: {message['body']}"
+                )
             return
         policy = room.get("policy") or {}
         if policy.get("turn_policy") == TurnPolicy.ROUND_ROBIN:
@@ -235,6 +244,7 @@ class Harness:
     def _release_slot(self, task_id: str):
         def done(_: asyncio.Task) -> None:
             self._running_tasks.pop(task_id, None)
+            self._task_context.pop(task_id, None)
             if not self._stopping.is_set():
                 # Free capacity: look for work that was queued while we were busy.
                 asyncio.create_task(self._drain_queued_tasks())
@@ -255,6 +265,7 @@ class Harness:
             turns = [Turn(role="user", content=f"Task: {task['title']}\n\n{task['spec']}")]
 
             for round_index in range(4):
+                self._drain_task_context(task_id, turns)
                 result = await self._run_model(system, turns, task_id=task_id)
                 text = (result.text or "").strip()
 
@@ -289,6 +300,12 @@ class Harness:
             log.exception("task %s failed", task_id)
             with contextlib.suppress(HubClientError):
                 await self.client.fail(task_id, f"{type(exc).__name__}: {exc}")
+
+    def _drain_task_context(self, task_id: str, turns: list[Turn]) -> None:
+        """Fold messages posted into the task's room into the working context."""
+        pending = self._task_context.pop(task_id, None)
+        if pending:
+            turns.append(Turn(role="user", content="Additional context:\n" + "\n".join(pending)))
 
     async def _await_input(self, task_id: str, question: str, timeout_s: float = 3600.0):
         queue: asyncio.Queue = asyncio.Queue()

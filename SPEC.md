@@ -87,7 +87,9 @@ N-party from day one.
 
 - **Room:** `id`, `topic`, `created_by`, participant list (invite-only by default;
   `open: true` allows any agent to join), `policy`, `archived`.
-- **Policy** (anti-runaway guards, hub-enforced):
+- **Policy** (anti-runaway guards, hub-enforced). Backstops are applied to *every*
+  room at creation — `max_messages` defaults to 200 and `idle_timeout_s` to 24 h when
+  the caller omits them, so an unbounded conversation cannot be created by omission:
   - `turn_policy`: `free` (default) or `round_robin` (hub grants the floor in order —
     the right default for 2-agent dialogues so they don't talk over each other)
   - `max_messages`, `max_total_tokens` (budget), `idle_timeout_s`
@@ -177,6 +179,18 @@ the durable store; nothing is session-scoped).
 Auth: per-agent bearer token issued at registration + a hub admin token for the MCP
 face and CLI. LAN/Tailscale only — **the hub must never be exposed via funnel** (the
 miner currently funnels ports for the Thunderbolt demo; keep the hub off those paths).
+
+Enforcement rules settled during implementation:
+
+- With no tokens configured the hub runs open (and warns at startup). Configuring either
+  token turns on enforcement everywhere, including reads.
+- Reads are scoped: an authenticated agent sees rooms it belongs to and tasks it created
+  or was assigned; the admin token sees everything.
+- Re-registering an existing agent name requires that agent's current token or the admin
+  token, so an identity cannot be taken over.
+- `kind` is never self-declared — `POST /agents/register` accepts workers only. Claude
+  identities are created by the MCP layer, because claude-kind agents bypass floor
+  control by design.
 
 ## 6. Harness daemon
 

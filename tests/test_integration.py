@@ -456,6 +456,64 @@ async def test_agent_delegates_a_subtask_to_another_agent(fleet) -> None:
         await stop_agent(*worker)
 
 
+async def test_context_posted_into_a_task_room_reaches_the_working_agent(fleet) -> None:
+    """`task_room` promises mid-flight context; the agent must actually read it."""
+    hub, claude = fleet
+    gate = asyncio.Event()
+    seen: list[str] = []
+
+    def responder(system, turns):
+        window = " ".join(turn.content for turn in turns)
+        seen.append(window)
+        if "edge case" in window:
+            return "Handled the edge case."
+        return "NEED_INPUT: anything else to consider?"
+
+    harness, runner = await start_agent(hub, "alpha", responder)
+    try:
+        submitted = await claude.call_tool(
+            "submit_task", {"title": "build", "spec": "build the thing", "assignee": "alpha"}
+        )
+        task_id = submitted.data["task_id"]
+        await wait_for(lambda: hub.store.require_task(task_id).state == "input_required")
+
+        opened = await claude.call_tool("task_room", {"task_id": task_id})
+        await claude.call_tool(
+            "post", {"room": opened.data["room"]["id"], "message": "also handle the edge case"}
+        )
+        await claude.call_tool(
+            "provide_input", {"task_id": task_id, "message": "see my note in the room"}
+        )
+
+        await wait_for(lambda: hub.store.require_task(task_id).state == "completed", timeout=25.0)
+        assert "edge case" in hub.store.require_task(task_id).result["text"]
+    finally:
+        gate.set()
+        await stop_agent(harness, runner)
+
+
+async def test_an_agent_picks_up_work_queued_while_it_was_busy(fleet) -> None:
+    """Nothing re-announces an already-queued task, so the agent must re-check."""
+    hub, claude = fleet
+    harness, runner = await start_agent(hub, "alpha", lambda s, t: "done")
+    try:
+        ids = []
+        for i in range(3):
+            submitted = await claude.call_tool(
+                "submit_task", {"title": f"t{i}", "spec": "s", "assignee": "alpha"}
+            )
+            ids.append(submitted.data["task_id"])
+
+        for task_id in ids:
+            await wait_for(
+                lambda tid=task_id: hub.store.require_task(tid).state == "completed",
+                timeout=25.0,
+            )
+        assert all(hub.store.require_task(i).state == "completed" for i in ids)
+    finally:
+        await stop_agent(harness, runner)
+
+
 async def test_status_is_durable_across_sessions(fleet) -> None:
     """A second Claude session checks on work the first one dispatched."""
     hub, claude = fleet

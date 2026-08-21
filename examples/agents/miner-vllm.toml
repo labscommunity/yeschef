@@ -28,10 +28,15 @@ temperature = 0.4
 max_tool_iterations = 8
 max_concurrent_tasks = 1
 
-# Opt-in only. Every command must match a pattern here, and file access is jailed
-# to file_root. Everything runs on this node, never on the hub.
+# Opt-in only. Every command must match a pattern here, file access is jailed to
+# file_root, and a command carrying shell metacharacters is refused unless the pattern
+# it matches carries one too. Everything runs on this node, never on the hub.
+#
+# Be deliberate about what you list. An interpreter pattern is arbitrary code execution
+# by definition -- `python3 *` matches `python3 -c "..."` and needs no metacharacter to
+# do anything this user can do. List narrower commands unless you mean to grant that.
 [tools]
 allow = ["shell", "file_read", "file_write", "file_list"]
-shell_allowlist = ["rg *", "ls *", "cat *", "python3 *", "nvidia-smi*"]
+shell_allowlist = ["rg *", "ls *", "cat *", "nvidia-smi*"]
 file_root = "~/agent-scratch"
 timeout_s = 120

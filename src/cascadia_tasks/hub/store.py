@@ -1028,7 +1028,7 @@ class Store:
     def sweep(self) -> dict[str, int]:
         """Reclaim tasks from lost agents, time out overruns, archive idle rooms."""
         ref = now()
-        stats = {"reclaimed": 0, "timed_out": 0, "rooms_archived": 0}
+        stats = {"reclaimed": 0, "timed_out": 0, "rooms_archived": 0, "floors_recovered": 0}
 
         with self._lock:
             rows = self._db.execute(
@@ -1084,7 +1084,7 @@ class Store:
 
         with self._lock:
             room_rows = self._db.execute(
-                "SELECT id, policy_json, last_activity FROM rooms WHERE archived = 0"
+                "SELECT id, policy_json, last_activity, floor_holder FROM rooms WHERE archived = 0"
             ).fetchall()
         for row in room_rows:
             policy = RoomPolicy.from_dict(json.loads(row["policy_json"]))
@@ -1094,7 +1094,33 @@ class Store:
             ):
                 self.archive_room(row["id"], "idle_timeout")
                 stats["rooms_archived"] += 1
+                continue
+            if policy.turn_policy is TurnPolicy.ROUND_ROBIN:
+                stats["floors_recovered"] += self._recover_floor(
+                    row["id"], row["floor_holder"], ref
+                )
         return stats
+
+    def _recover_floor(self, room_id: str, holder: str | None, ref: float) -> int:
+        """Hand the floor on when its holder cannot use it.
+
+        A dialogue is otherwise dead until the idle timeout if the agent holding the
+        turn went offline, or if its FLOOR_GRANTED event was dropped in transit.
+        """
+        room = self.get_room(room_id)
+        if room is None or room.archived:
+            return 0
+        if holder is None:
+            candidate = self._first_worker(room)
+            if candidate is None:
+                return 0
+            self._grant_floor(room, candidate)
+            return 1
+        agent = self.get_agent(holder)
+        if agent is None or ref - agent.last_seen > HEARTBEAT_TTL_S:
+            self._advance_floor(room, holder)
+            return 1
+        return 0
 
 
 def _parse_mentions(body: str, members: list[str]) -> list[str]:

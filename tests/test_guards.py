@@ -233,6 +233,68 @@ async def test_open_mode_still_works_with_no_tokens_configured() -> None:
             assert (await client.get("/api/v1/agents")).status_code == 200
 
 
+# ------------------------------------------------- dialogues cannot deadlock
+
+
+def test_the_sweep_hands_on_a_floor_its_holder_cannot_use(fleet: Store) -> None:
+    """A dropped grant or a dead agent must not freeze a dialogue until idle timeout."""
+    from cascadia_tasks.models import TurnPolicy
+
+    room = fleet.create_room(
+        "dialogue",
+        "claude:main",
+        ["alpha", "beta"],
+        RoomPolicy(turn_policy=TurnPolicy.ROUND_ROBIN),
+    )
+    assert fleet._floor_holder(room.id) == "alpha"
+
+    with fleet._lock:
+        fleet._db.execute("UPDATE agents SET last_seen = 0 WHERE name = ?", ("alpha",))
+        fleet._db.commit()
+
+    stats = fleet.sweep()
+    assert stats["floors_recovered"] == 1
+    assert fleet._floor_holder(room.id) == "beta"
+
+
+def test_an_unseeded_ring_still_enforces_turns(fleet: Store) -> None:
+    """A room built before its agents registered must not skip floor control."""
+    from cascadia_tasks.models import TurnPolicy
+
+    room = fleet.create_room(
+        "dialogue",
+        "claude:main",
+        ["alpha", "beta"],
+        RoomPolicy(turn_policy=TurnPolicy.ROUND_ROBIN),
+    )
+    with fleet._lock:
+        fleet._db.execute("UPDATE rooms SET floor_holder = NULL WHERE id = ?", (room.id,))
+        fleet._db.commit()
+
+    with pytest.raises(HubError) as exc:
+        fleet.post_message(room.id, "beta", "jumping the queue")
+    assert exc.value.code == "conflict"
+
+    assert fleet.post_message(room.id, "alpha", "my turn").seq == 1
+
+
+def test_yield_floor_passes_the_turn_without_speaking(fleet: Store) -> None:
+    from cascadia_tasks.models import TurnPolicy
+
+    room = fleet.create_room(
+        "dialogue",
+        "claude:main",
+        ["alpha", "beta"],
+        RoomPolicy(turn_policy=TurnPolicy.ROUND_ROBIN),
+    )
+    fleet.yield_floor(room.id, "alpha")
+    assert fleet._floor_holder(room.id) == "beta"
+    assert fleet.fetch_messages(room.id) == []
+
+    with pytest.raises(HubError):
+        fleet.yield_floor(room.id, "alpha")  # no longer holds it
+
+
 # ------------------------------------------------------- context windows
 
 

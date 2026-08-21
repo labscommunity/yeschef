@@ -68,6 +68,15 @@ def hub_serve(
     console.print(f"  MCP     [cyan]http://{host}:{port}/mcp[/cyan]")
     console.print(f"  agents  [cyan]http://{host}:{port}/api/v1[/cyan]")
     console.print(f"  db      {db}")
+    if not os.environ.get("CASCADIA_TASKS_ADMIN_TOKEN") and not os.environ.get(
+        "CASCADIA_TASKS_REGISTER_TOKEN"
+    ):
+        console.print(
+            "\n[yellow]No tokens set — open mode.[/yellow] Anyone who can reach this port "
+            "can dispatch work to every node, read every transcript, and cancel tasks.\n"
+            "Set CASCADIA_TASKS_ADMIN_TOKEN and CASCADIA_TASKS_REGISTER_TOKEN unless this "
+            "is a trusted LAN. Never expose this hub through a Tailscale funnel.\n"
+        )
     uvicorn.run(
         "cascadia_tasks.hub.app:app_factory",
         host=host,
