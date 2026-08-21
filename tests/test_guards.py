@@ -388,3 +388,27 @@ def test_only_agents_can_trigger_the_stop_phrase(fleet: Store) -> None:
 
     fleet.post_message(room.id, "alpha", "fine — AGREED")
     assert fleet.require_room(room.id).archived_reason == "stop_phrase"
+
+
+async def test_an_agent_reclaims_its_name_after_a_restart(tmp_path) -> None:
+    """The anti-hijack rule must not lock a worker out of its own identity: a restart
+    presents the token it persisted, and re-registration succeeds."""
+    from farmteam.sdk import AgentClient
+
+    async with live_hub() as hub:
+        token_file = tmp_path / "worker.token"
+
+        async with AgentClient(hub.url, "worker", token_path=token_file) as first:
+            await first.register(node="box")
+        assert token_file.exists(), "agent did not persist its token"
+
+        # A fresh process for the same name — no token passed in, only the file.
+        async with AgentClient(hub.url, "worker", token_path=token_file) as restarted:
+            await restarted.register(node="box")
+            await restarted.heartbeat()
+
+        # An impostor with no token still cannot take the name.
+        async with AgentClient(hub.url, "worker") as impostor:
+            with pytest.raises(Exception) as exc:
+                await impostor.register(node="elsewhere")
+            assert "forbidden" in str(exc.value).lower()

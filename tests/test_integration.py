@@ -555,3 +555,67 @@ async def test_status_is_durable_across_sessions(fleet) -> None:
             assert result.data["result"]["text"] == "finished the job"
     finally:
         await stop_agent(harness, runner)
+
+
+async def test_a_model_that_only_describes_tool_calls_fails_loudly(fleet) -> None:
+    """Some models print tool calls as JSON instead of emitting them. Reporting that as
+    a completed task is worse than failing — the requester believes work happened."""
+    hub, claude = fleet
+    pretend = (
+        'I will create the files.\n```json\n{"name": "file_write", '
+        '"arguments": {"path": "index.html", "content": "<html></html>"}}\n```'
+    )
+    harness, runner = await start_agent(
+        hub,
+        "alpha",
+        lambda s, t: pretend,
+        tools=ToolsConfig(allow=["file_write"], file_root="/tmp"),
+    )
+    try:
+        submitted = await claude.call_tool(
+            "submit_task", {"title": "build", "spec": "build a page", "assignee": "alpha"}
+        )
+        task_id = submitted.data["task_id"]
+        await wait_for(lambda: hub.store.require_task(task_id).state == "failed")
+        assert "tool calls as text" in hub.store.require_task(task_id).error
+    finally:
+        await stop_agent(harness, runner)
+
+
+async def test_a_summary_that_mentions_tool_calls_is_not_flagged(fleet) -> None:
+    """The unexecuted-tool-call guard must not fire when tools genuinely ran: models
+    often describe what they did, and failing that work would be worse than the bug."""
+    from farmteam.agent.backends.base import ChatResult, ToolCall
+
+    state = {"used": False}
+
+    def respond(system, turns):
+        if not state["used"]:
+            state["used"] = True
+            return ChatResult(
+                text="",
+                tool_calls=[
+                    ToolCall(
+                        id="c1", name="file_write", arguments={"path": "a.txt", "content": "x"}
+                    )
+                ],
+            )
+        # The summary quotes the call it made — shape the guard used to reject.
+        return '{"name": "file_write", "arguments": {"path": "a.txt"}} — wrote the file.'
+
+    harness, runner = await start_agent(
+        hub_and_tools := fleet[0],
+        "alpha",
+        respond,
+        tools=ToolsConfig(allow=["file_write"], file_root="/tmp/ft-guard-test"),
+    )
+    del hub_and_tools
+    try:
+        submitted = await fleet[1].call_tool(
+            "submit_task", {"title": "write", "spec": "write a.txt", "assignee": "alpha"}
+        )
+        task_id = submitted.data["task_id"]
+        await wait_for(lambda: fleet[0].store.require_task(task_id).state == "completed")
+        assert fleet[0].store.require_task(task_id).result["tool_rounds"] >= 1
+    finally:
+        await stop_agent(harness, runner)

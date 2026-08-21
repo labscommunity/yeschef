@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -35,12 +37,30 @@ class AgentClient:
         token: str | None = None,
         register_token: str | None = None,
         timeout: float = 30.0,
+        token_path: str | Path | None = None,
     ) -> None:
         self.hub_url = hub_url.rstrip("/")
         self.name = name
-        self.token = token
         self.register_token = register_token
+        # A restarting agent must be able to reclaim its own name. Its token is the
+        # proof, so persist it: without this, a worker that restarts is locked out of
+        # its own identity until an operator intervenes.
+        self.token_path = Path(token_path).expanduser() if token_path else None
+        self.token = token or self._load_token()
         self._http = httpx.AsyncClient(base_url=f"{self.hub_url}/api/v1", timeout=timeout)
+
+    def _load_token(self) -> str | None:
+        if self.token_path and self.token_path.exists():
+            return self.token_path.read_text().strip() or None
+        return None
+
+    def _save_token(self, token: str) -> None:
+        if not self.token_path:
+            return
+        self.token_path.parent.mkdir(parents=True, exist_ok=True)
+        self.token_path.write_text(token)
+        with contextlib.suppress(OSError):
+            self.token_path.chmod(0o600)
 
     async def __aenter__(self) -> AgentClient:
         return self
@@ -84,7 +104,7 @@ class AgentClient:
         data = await self._request(
             "POST",
             "/agents/register",
-            token=self.register_token or self.token,
+            token=self.register_token or self.token,  # own token proves ownership
             json={
                 "name": self.name,
                 "kind": kind,
@@ -94,6 +114,7 @@ class AgentClient:
             },
         )
         self.token = data["token"]
+        self._save_token(self.token)
         return self.token
 
     async def heartbeat(self) -> None:

@@ -19,6 +19,15 @@ from .config import AgentConfig
 
 log = logging.getLogger("farmteam.agent")
 
+
+def agent_token_path(name: str):
+    """Where this agent remembers its own registration token across restarts."""
+    from ..settings import home
+
+    safe = name.replace("/", "_").replace(":", "_")
+    return home() / "tokens" / f"{safe}.token"
+
+
 HEARTBEAT_INTERVAL_S = 10.0
 MAX_TRACKED_ROOMS = 256
 TASK_ROOM_PREFIX = "room_task_"
@@ -31,7 +40,12 @@ class Harness:
         self.config = config
         self.backend: Backend = backend or build_backend(config.backend)
         self.tools = ToolExecutor(config.tools)
-        self.client = AgentClient(config.hub, config.name, register_token=config.register_token)
+        self.client = AgentClient(
+            config.hub,
+            config.name,
+            register_token=config.register_token,
+            token_path=agent_token_path(config.name),
+        )
         self._running_tasks: dict[str, asyncio.Task] = {}
         self._input_waiters: dict[str, asyncio.Queue] = {}
         self._room_locks: dict[str, asyncio.Lock] = {}
@@ -202,7 +216,7 @@ class Harness:
                 "never write another participant's turn."
             )
             try:
-                result = await self._run_model(system, turns)
+                result, _ = await self._run_model(system, turns)
                 body = (result.text or "").strip()
             except Exception:
                 log.exception("model call failed in room %s", room_id)
@@ -274,8 +288,24 @@ class Harness:
 
             for round_index in range(4):
                 self._drain_task_context(task_id, turns)
-                result = await self._run_model(system, turns, task_id=task_id)
+                result, tool_rounds = await self._run_model(system, turns, task_id=task_id)
                 text = (result.text or "").strip()
+
+                if (
+                    self.tools.enabled
+                    and tool_rounds == 0
+                    and _looks_like_unexecuted_tool_calls(text)
+                ):
+                    # Some models describe a tool call in prose or JSON instead of
+                    # emitting one. Reporting that as a finished task is worse than
+                    # failing: the requester believes work happened that never did.
+                    await self.client.fail(
+                        task_id,
+                        "model wrote tool calls as text instead of calling the tools — "
+                        f"nothing was executed. Model {self.backend.model} may not "
+                        "support tool calling; try one that does.",
+                    )
+                    return
 
                 if text.startswith("NEED_INPUT:") or "\nNEED_INPUT:" in text:
                     question = text.split("NEED_INPUT:", 1)[1].strip()
@@ -293,6 +323,7 @@ class Harness:
                         "text": text,
                         "tokens": result.total_tokens,
                         "rounds": round_index + 1,
+                        "tool_rounds": tool_rounds,
                         "model": self.backend.model,
                     },
                 )
@@ -329,7 +360,11 @@ class Harness:
     # ------------------------------------------------------------ model loop
 
     async def _run_model(self, system: str, turns: list[Turn], task_id: str | None = None):
-        """One model call, plus the tool loop if this agent has tools enabled."""
+        """One model call, plus the tool loop if this agent has tools enabled.
+
+        Returns (result, tool_rounds) — the count matters because a reply that merely
+        *describes* tool calls is only suspicious when no tool actually ran.
+        """
         specs = self.tools.specs() if self.tools.enabled else None
         result = await self.backend.chat(
             system,
@@ -359,7 +394,24 @@ class Harness:
                 max_tokens=self.config.max_tokens,
                 temperature=self.config.temperature,
             )
-        return result
+        return result, iterations
+
+
+def _looks_like_unexecuted_tool_calls(text: str) -> bool:
+    """Detect a reply that *describes* tool calls rather than making them."""
+    if not text:
+        return False
+    lowered = text.lower()
+    signals = (
+        '"name": "file_write"',
+        '"name": "file_read"',
+        '"name": "shell"',
+        '"arguments":',
+        '"tool_call"',
+        '"function":',
+    )
+    hits = sum(1 for token in signals if token in lowered)
+    return hits >= 2
 
 
 async def run_agent(config: AgentConfig) -> None:
