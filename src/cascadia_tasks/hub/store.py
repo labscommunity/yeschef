@@ -936,7 +936,10 @@ class Store:
             ).fetchall()
         for row in room_rows:
             policy = RoomPolicy.from_dict(json.loads(row["policy_json"]))
-            if policy.idle_timeout_s and ref - row["last_activity"] > policy.idle_timeout_s:
+            if (
+                policy.idle_timeout_s is not None
+                and ref - row["last_activity"] >= policy.idle_timeout_s
+            ):
                 self.archive_room(row["id"], "idle_timeout")
                 stats["rooms_archived"] += 1
         return stats

@@ -29,6 +29,10 @@ from .store import Store
 
 SSE_KEEPALIVE_S = 15.0
 
+# Must live at module scope: `from __future__ import annotations` turns every annotation
+# into a string, and FastAPI resolves those against module globals only.
+AuthHeader = Annotated[str | None, Header(alias="Authorization")]
+
 
 @dataclass(slots=True)
 class HubConfig:
@@ -78,20 +82,17 @@ def build_router(store: Store, config: HubConfig) -> APIRouter:
     router = APIRouter(prefix="/api/v1")
     auth = Auth(store, config)
 
-    AuthHeader = Annotated[str | None, Header(alias="Authorization")]
-
-    def as_agent(name: str, authorization: AuthHeader) -> str:
+    def as_agent(name: str, authorization: AuthHeader = None) -> str:
         return auth.agent(name, authorization)
 
     # ------------------------------------------------------------- agents
 
     @router.post("/agents/register")
     def register(payload: dict = Body(...), authorization: AuthHeader = None) -> dict:
-        if config.register_token is not None and _bearer(authorization) not in (
-            config.register_token,
-            config.admin_token,
-        ):
-            raise HubError(ErrorCode.UNAUTHORIZED, "registration token required", 401)
+        if config.register_token is not None:
+            accepted = {t for t in (config.register_token, config.admin_token) if t}
+            if _bearer(authorization) not in accepted:
+                raise HubError(ErrorCode.UNAUTHORIZED, "registration token required", 401)
         agent, token = store.register_agent(
             name=payload["name"],
             kind=AgentKind(payload.get("kind", AgentKind.WORKER)),
@@ -137,11 +138,15 @@ def build_router(store: Store, config: HubConfig) -> APIRouter:
 
     @router.get("/rooms")
     def list_rooms(
-        as_agent: str = Query(...),
+        as_agent: str | None = Query(None),
         include_archived: bool = False,
         authorization: AuthHeader = None,
     ) -> dict:
-        auth.agent(as_agent, authorization)
+        """Rooms for one agent, or every room when called with the admin token."""
+        if as_agent:
+            auth.agent(as_agent, authorization)
+        else:
+            auth.admin(authorization)
         rooms = store.list_rooms(agent=as_agent, include_archived=include_archived)
         return {"rooms": [r.to_dict() for r in rooms]}
 
