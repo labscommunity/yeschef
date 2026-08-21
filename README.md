@@ -1,250 +1,155 @@
-# cascadia-tasks
+# ⚾ farmteam
 
-Communication and task-orchestration fabric between Claude Code and local AI agents on
-the Rainier fleet.
+**The farm team for Claude Code.** Local models on your own hardware that take the
+grunt work, talk to each other in bounded rooms, and never hit a rate limit.
 
-- **Tasks** — dispatch long-running work from Claude Code to a local agent and check its
-  status at any time, from any session, days later. `submit_task` returns a task id
-  immediately; `task_status(id)` answers whenever you ask.
-- **Rooms** — N-party multi-turn conversation. Claude Code ↔ local agent, local agent ↔
-  local agent, or any mix. Ergonomics mirror Claude Code's own cross-session messaging
-  (`list_agents` / `send_message` / `fetch_messages`).
+You pay per token and wait out rate limits while the GPUs you already own sit idle.
+farmteam turns them into a roster Claude Code can actually manage: dispatch a task, keep
+working, check on it whenever — from any session, days later. Your ace does the
+thinking; the farm team does the reps.
 
-Claude Code stays on the Anthropic API. Local agents are separate processes running
-against Ollama, vLLM, Tahoma, or any OpenAI-compatible endpoint.
+<!-- demo GIF: dialogue with live human interjection — docs/demo.gif -->
 
 ```
-   Claude Code ──MCP/HTTP──▶ ┌─────────┐ ◀──REST+SSE── harness ──▶ Ollama  (nuc-alpha)
-   (any session,             │   hub   │ ◀──REST+SSE── harness ──▶ vLLM    (miner)
-    any machine)             │ SQLite  │ ◀──REST+SSE── harness ──▶ Tahoma  (sharded)
+   Claude Code ──MCP/HTTP──▶ ┌─────────┐ ◀──REST+SSE── worker ──▶ Ollama  (office-mac)
+   (any session,             │   hub   │ ◀──REST+SSE── worker ──▶ vLLM    (gpu-box)
+    any machine)             │ SQLite  │ ◀──REST+SSE── worker ──▶ any /v1 (spare-pc)
                              └─────────┘
 ```
 
-## Quickstart — two commands
+|   | Without a farm team | With one |
+|---|---|---|
+| Grunt work (summarize, classify, extract, triage) | burns your Claude tokens | runs on your hardware, $0 marginal |
+| Rate-limited or throttled | you wait | your fleet keeps working |
+| Long-running work | blocks the session, dies with it | dispatched in the background; status durable in SQLite, checkable from any session |
+| A second opinion | another API call | two of your machines argue it out in a bounded room while you watch — and interject |
+
+## Two commands
 
 ```bash
-uv tool install cascadia-tasks          # or: uv pip install -e ".[dev]"
+uv tool install farmteam        # or: pipx install farmteam
+
+# 1. On the hub machine (where you run Claude Code) — generates tokens,
+#    wires Claude Code, prints the worker command:
+farmteam up
+
+# 2. On each worker — auto-detects Ollama / vLLM / LM Studio, verifies the
+#    model answers, registers. Paste the line `up` printed:
+farmteam join --hub http://hub-host:8787 --token <printed-by-up>
 ```
 
-**On the hub machine** (where you run Claude Code) — one command generates tokens,
-wires Claude Code, and prints the worker command:
+That's the whole setup. Single-box demo: run both on one machine — `join` needs no
+flags at all. `farmteam doctor` diagnoses anything that's off; `--detach`/`down`/`ps`
+run it all in the background from one terminal. macOS, Linux, and Windows.
+
+## What it feels like
+
+From Claude Code (wired automatically by `up`):
+
+```
+> list_agents                                     # your roster, live
+> submit_task("label these 400 log lines", selector="tier:fast")
+  → task_9f3k2p                                   # returns immediately
+> task_status("task_9f3k2p")                      # any time, any session
+> task_result("task_9f3k2p")
+  → … lifetime: 62 tasks · ~1.2M tokens kept local · 9.4h of work on your hardware
+> start_dialogue(["fastball", "closer"], goal="agree on a cache eviction policy")
+> room_transcript("room_x7c2")                    # watch them work it out
+```
+
+From your terminal:
 
 ```bash
-cascadia-tasks up
+farmteam ask fastball "what's in today's error log?"    # send, wait, print the reply
+farmteam submit "draft release notes from this diff" --to closer
+farmteam dialogue fastball closer --goal "pick a caching strategy"   # follows it live
+farmteam watch room_x7c2 --record demo.json             # save a transcript
+farmteam replay demo.json                               # re-stream it, real pacing
+farmteam stats                                          # what the team has done for you
 ```
 
-**On each worker node** — one command auto-detects the local model, verifies it, and
-registers. Paste the line `up` printed:
+The dialogue is the part you have to see: two of your machines, in different colors,
+working a problem — and you can type into the middle of it. Every room is **bounded by
+construction** (message caps, token budgets, idle timeouts, stop phrases — enforced by
+the hub, not by hoping), so nothing loops forever.
 
-```bash
-cascadia-tasks join --hub http://mini.local:8787 --token <printed-by-up>
-```
+## Isn't this what Agent Teams does?
 
-That's it. `up` already connected Claude Code, so a session can immediately
-`list_agents`, `submit_task`, and `start_dialogue`. Single-box demo? Run both in two
-terminals — on the same machine `join` needs no flags at all.
+Complementary, not competing. Native subagents and teams are Claude-only, same billing,
+same cloud — excellent at parallel *thinking*. A farm team is the other half:
+**heterogeneous workers that are free after hardware**, that keep going when you're
+throttled, and whose task status outlives any session. Claude Code stays the brain and
+delegates the verifiable grunt work.
 
-Prefer the background? `cascadia-tasks up --detach` and `join --detach` return to the
-prompt; `cascadia-tasks down` stops them, `ps` lists them. Runs the same on macOS,
-Linux, and Windows (see [`examples/deploy/`](examples/deploy/) for persistent services).
+## What a worker is
 
-**Check it's healthy anytime:**
+`farmteam join` auto-configures one from whatever model server it finds. A TOML config
+(see [`examples/agents/`](examples/agents/)) is for pinning a persona, capability tags
+(`tier:fast`, `tier:reasoning` — dispatch by tag and the first idle match claims it),
+or **opt-in tools**: shell (pattern-allowlisted, metacharacter-screened), file access
+(jailed to one directory), web fetch (refuses internal addresses) — always executed on
+the worker, never the hub. Anything embedding the Python SDK (`farmteam.sdk.AgentClient`)
+is a first-class agent too.
 
-```bash
-cascadia-tasks doctor        # config, hub reachability, detected model servers
-```
+## Honesty ledger
 
-### Drive it yourself, from the terminal
+What this is, and isn't:
 
-```bash
-cascadia-tasks agents                              # who is on the fleet
-cascadia-tasks submit "summarize today's log" --to nuc-alpha
-cascadia-tasks task <task-id>                       # status + result, anytime
-cascadia-tasks ask nuc-alpha "what did you find?"   # send and wait for the reply
-cascadia-tasks dialogue nuc-alpha miner-reasoner --goal "pick a caching strategy"
-```
+- **Local models are slower and weaker than Claude** — often 3–30× slower per token.
+  Delegation wins on bounded, verifiable work (bulk transforms, drafts, triage,
+  second opinions), not on deep reasoning. That's why the design keeps Claude in charge.
+- **Total cost isn't $0.** It's your electricity and your hardware. What it isn't is
+  metered, throttled, or revocable.
+- **No TLS termination** — the hub is designed for LAN/Tailscale (which encrypts
+  transport). Never expose it through a public funnel or port-forward.
+- **Dialogues are real model output, not magic.** Small models sometimes say dull
+  things. The `--record`/`replay` pipeline exists so demos are replays of real
+  conversations, not scripts.
+- Windows support is tested in CI logic-paths but has had less real-world mileage than
+  macOS/Linux. Reports welcome.
 
-### From Claude Code
+## Security posture
 
-`up` wires the MCP server in automatically. To teach a session *when* to delegate,
-install the bundled skill:
-
-```bash
-cascadia-tasks install-skill          # into this project's .claude/skills/
-cascadia-tasks install-skill --user   # for every project
-```
-
-Then, in a session:
-
-```
-> list_agents                                    # who is on the fleet
-> submit_task("summarize today's hub log", assignee="nuc-alpha")
-  → task_hx8k2m9qp4                              # returns immediately
-> task_status("task_hx8k2m9qp4")                 # ask any time, any session
-> send_message("nuc-alpha", "what did you find?")  # multi-turn, back and forth
-> start_dialogue(["nuc-alpha", "miner-reasoner"], goal="pick a caching strategy")
-  → room_a7c2k9                                  # agents converse on their own
-> room_transcript("room_a7c2k9")                 # watch it happen
-```
-
-See [docs/AGENTS.md](docs/AGENTS.md) for the full agent-facing guide.
-
-## Runs anywhere
-
-Pure Python (3.11+), SQLite, and HTTP — no platform-specific code. The hub and workers
-run on macOS, Linux, and Windows. Two roles, different needs:
-
-- **The hub** does no inference — it's a bookkeeper. Happy on a Mac Mini, a Linux box, or
-  a Raspberry Pi. Moving it is a one-line change (`--advertise` / the workers' `--hub`).
-- **A worker** calls a model server over HTTP, so its requirements are whatever
-  Ollama / vLLM / Tahoma needs. A worker can even run on a different machine from the
-  model it drives.
-
-Windows workers: everything works; if you grant the `shell` tool, write allowlist
-patterns in `cmd.exe` syntax (see [`examples/deploy/windows.md`](examples/deploy/windows.md)).
-
-## The two primitives
-
-**Tasks** carry a state machine that mirrors the MCP Tasks extension vocabulary, so the
-tool surface can upgrade to spec-native tasks when Claude Code supports them:
-
-```
-queued → claimed → working → completed | failed | cancelled
-                 ↘ input_required ↗
-```
-
-An agent that hits a genuine fork parks the task in `input_required` and asks its
-question in the task's room; `provide_input` answers and work resumes. Tasks are durable
-in SQLite: the hub can restart, the session can end, the status is still there.
-
-**Rooms** are N-party conversations. Direct messages are just two-party rooms. Every
-room can carry policy that the hub enforces, so no two agents can talk forever:
-
-| guard | effect |
-|---|---|
-| `max_messages` | archives the room at N messages |
-| `max_total_tokens` | archives it at a token budget |
-| `idle_timeout_s` | archives it after silence |
-| `stop_phrase` | archives it when an agent says the phrase |
-| `turn_policy: round_robin` | hub grants the floor in ring order; out-of-turn posts are rejected |
-
-Claude Code (and you) never wait for the floor — a post from a Claude session interjects
-at any point and re-anchors the ring, which is how you steer a running dialogue.
-
-**Every room is bounded whether you ask for it or not.** A room created without limits
-gets a 200-message cap and a 24-hour idle timeout; you can raise them, not remove them.
-Two agents set to reply to everything will therefore stop, rather than talking until the
-hardware gives out. The reverse is also handled: an agent that holds the floor and has
-nothing to say passes the turn, and the hub hands the floor on if its holder goes
-offline, so a dialogue cannot deadlock either.
-
-## MCP tools
-
-| | |
-|---|---|
-| `list_agents` `whoami` `set_identity` | who is on the fleet, and who this session is |
-| `submit_task` `task_status` `task_result` `list_tasks` `cancel_task` | dispatch and check |
-| `provide_input` `task_room` | turn a running task into a conversation |
-| `send_message` `fetch_messages` | direct multi-turn with one agent |
-| `create_room` `post` `room_transcript` `join_room` `leave_room` `list_rooms` `archive_room` | group conversation |
-| `start_dialogue` | agents converse autonomously toward a goal, bounded |
-
-Every tool returns in milliseconds. The only wait is the explicit `wait_s` on
-`fetch_messages`, capped at 60 s — comfortably under Claude Code's ~2 minute MCP
-auto-background threshold.
-
-## Agents
-
-`cascadia-tasks join` is the easy path — it auto-detects the model and needs no file.
-Reach for a **TOML config** only when you want to pin things `join` doesn't set: a custom
-persona, a specific backend adapter, or worker-side tools. Run one with
-`cascadia-tasks agent run -c <file>`. See [`examples/agents/`](examples/agents/) for
-Ollama, vLLM, and Tahoma configs.
-
-```toml
-name = "nuc-alpha"
-hub = "http://mini.local:8787"
-tags = ["tier:fast", "ctx:32k"]
-
-[backend]
-type = "anthropic_compat"          # Ollama v0.14+ serves the Anthropic Messages API
-base_url = "http://localhost:11434"
-model = "qwen3:8b"
-
-[persona]
-system_prompt = "You are nuc-alpha, a fast local agent…"
-reply_when = "mentioned"           # mentioned | round_robin | always
-
-[tools]                            # omit entirely for chat-only (the default)
-allow = ["shell", "file_read"]
-shell_allowlist = ["rg *", "ls *"]  # an interpreter here would mean arbitrary code
-file_root = "~/agent-scratch"
-```
-
-Dispatch by name (`assignee="nuc-alpha"`) or by capability (`selector="tier:fast"`), in
-which case every matching agent is offered the task and exactly one claim wins.
-
-Tools are opt-in per agent, allowlisted by command pattern, jailed to one directory, and
-executed on the worker node — never on the hub.
-
-**Embedding instead of running the harness:** anything that uses
-`cascadia_tasks.sdk.AgentClient` is a first-class agent. That is the seam for making
-Tahoma itself join rooms and claim tasks.
+Auth is on by default (`up` generates tokens; `--open` exists for trusted LANs and says
+so loudly). Agents hold per-agent bearer tokens; a registered name can't be hijacked
+without its token; reads are scoped to the caller once auth is on; agents can't
+self-register as privileged kinds; every autonomous room is bounded; worker tools are
+opt-in, allowlisted, and jailed. Full details in [SPEC.md](SPEC.md).
 
 ## Operating it
 
 ```bash
-cascadia-tasks agents               # fleet status
-cascadia-tasks tasks --state working
-cascadia-tasks task task_hx8k2m9qp4 # detail plus event history
-cascadia-tasks result task_hx8k2m9qp4
-cascadia-tasks rooms                # conversations, including recently closed
-cascadia-tasks watch room_a7c2k9    # follow a conversation live
-cascadia-tasks cancel task_hx8k2m9qp4
-cascadia-tasks ps                   # background processes started here
+farmteam agents / tasks / task <id> / result <id> / rooms / watch <room> / cancel <id>
+farmteam stats            # lifetime: tasks completed, tokens kept local, hours worked
+farmteam ps / down        # background processes on this machine
 ```
 
-A background sweep reclaims tasks whose agent disappeared (requeue, then fail after two
-attempts), times out overruns, archives idle rooms, and hands on a stuck dialogue floor.
+A background sweep requeues tasks from lost agents, times out overruns, archives idle
+rooms, and un-sticks stalled dialogue turns. Persistent-service units for launchd,
+systemd, and Windows are in [`examples/deploy/`](examples/deploy/).
 
-Persistent-service units are in [`examples/deploy/`](examples/deploy/): launchd (hub),
-systemd (workers), and [Windows](examples/deploy/windows.md) (NSSM / Task Scheduler).
+## For agents
 
-## Security posture
+Claude Code sessions get tool docs automatically over MCP. To teach a session *when* to
+delegate (not just how), install the bundled skill: `farmteam install-skill` (or
+`--user` for all projects). The full agent-facing guide is
+[docs/AGENTS.md](docs/AGENTS.md).
 
-LAN and Tailscale only, and **set the two tokens**:
+## Standing on
 
-```bash
-export CASCADIA_TASKS_ADMIN_TOKEN=$(openssl rand -hex 24)     # admin + operator routes
-export CASCADIA_TASKS_REGISTER_TOKEN=$(openssl rand -hex 24)  # who may join the fleet
-```
-
-With no tokens the hub runs in **open mode** — any process that can reach the port may
-read every transcript and dispatch work to every node. It says so loudly at startup.
-Once either token is set, authentication is enforced everywhere and reads are scoped:
-an agent sees rooms it belongs to and tasks it created or was assigned, and only the
-admin token sees the whole fleet.
-
-Other guarantees worth knowing:
-
-- Agents authenticate with a bearer token minted at registration. Re-registering an
-  existing name requires that token (or the admin token), so a name cannot be hijacked.
-- `kind` is not self-declared — only workers may self-register.
-- Worker tools are opt-in, allowlisted per command pattern, jailed to one directory, and
-  refuse shell metacharacters unless the matching pattern contains one. `web_fetch`
-  refuses private, loopback, and link-local addresses, re-checking every redirect hop.
-- An interpreter in a shell allowlist (`python3 *`) is arbitrary code execution by
-  definition. List narrower commands unless you mean to grant it.
-- There is no TLS termination here — Tailscale provides transport encryption. Never
-  expose the hub through a Tailscale funnel.
+farmteam is a client of the local-inference ecosystem, not a fork of it: it talks to
+[Ollama](https://github.com/ollama/ollama) (and the
+[llama.cpp](https://github.com/ggml-org/llama.cpp) engine underneath it),
+[vLLM](https://github.com/vllm-project/vllm), LM Studio, and any OpenAI- or
+Anthropic-compatible endpoint. The MCP server is built on
+[FastMCP](https://github.com/jlowin/fastmcp). Those projects do the hard part.
 
 ## Development
 
 ```bash
-uv run pytest              # 159 tests
+uv venv && uv pip install -e ".[dev]"
+uv run pytest              # 166 tests, including thread-level race regressions
 uv run ruff check src tests
-uv run ruff format src tests
 ```
 
-[SPEC.md](SPEC.md) is the contract; [CLAUDE.md](CLAUDE.md) is the working agreement
-(conventional commits, no AI co-authors).
+MIT. Formerly `cascadia-tasks` — the old CLI name still works as an alias.
