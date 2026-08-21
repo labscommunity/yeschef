@@ -53,6 +53,15 @@ run it all in the background from one terminal. macOS, Linux, and Windows.
 
 ## What it feels like
 
+![One prompt in Claude Code: dispatch to a local worker, the watcher subagent appears in the panel, and the finished files return on their own](docs/claude-demo.gif)
+
+*One prompt, live session: Claude shows the roster — every worker's model and machine
+(`builder · ollama/qwen2.5:7b-instruct @ miner`) — dispatches the buildout, and spawns
+the `farmteam-watcher` subagent, visible in the native panel like any subagent. The
+session comes straight back to you; when the local worker finishes, the watcher returns
+on its own, lands the files in `./site`, and Claude reviews the local model's work
+against the spec. No polling, no "is it done yet."*
+
 From Claude Code (wired automatically by `up`):
 
 ```

@@ -1,9 +1,10 @@
-# Renders docs/claude-demo.gif — the full buildout loop from inside Claude Code:
-# dispatch to a local worker, then pull the files it built into the project.
+# Renders docs/claude-demo.gif — the full farm-team loop from one prompt:
+# roster (local models, named machines) → dispatch → the farmteam-watcher subagent
+# appears in the panel → the result and files come back on their own. No polling.
 #
-# Live session, not a replay. Playback runs at 2x so the GIF stays short; typing speed
-# is set slow here so it reads naturally after the speed-up. The worker's build happens
-# during the hidden gap between the two prompts (a cut, like any screencast).
+# Live session, not a replay. Playback runs at 2x (typing slowed to compensate); the
+# hidden cut skips part of the local model's build time. Re-recording needs a reachable
+# hub with a `builder` worker and `farmteam install-skill` run in the project.
 #
 #   vhs docs/claude-demo.tape
 
@@ -22,26 +23,23 @@ Hide
 Type "cd /tmp/ft-demo && clear"
 Enter
 Sleep 1s
-Type "claude --allowedTools 'mcp__farmteam__list_agents,mcp__farmteam__submit_task,mcp__farmteam__task_status,mcp__farmteam__wait_task,mcp__farmteam__task_result,mcp__farmteam__task_files,mcp__farmteam__task_file,Read,Write'"
+Type "claude --allowedTools 'mcp__farmteam__list_agents,mcp__farmteam__submit_task,mcp__farmteam__task_status,mcp__farmteam__wait_task,mcp__farmteam__task_result,mcp__farmteam__task_files,mcp__farmteam__task_file,Read,Write,Task'"
 Enter
 Sleep 5s
 Enter
 Sleep 14s
 Show
 
-# 1. Dispatch and keep the session free.
-Type "Read DESIGN.md and dispatch the buildout to my farm team's builder. Don't wait on it — just give me the task id."
+# One prompt: dispatch, spawn the watcher, and get the session back.
+Type "Read DESIGN.md, show me the farm team roster, then dispatch the buildout to the builder and spawn the farmteam-watcher in the background to bring the files into ./site when it's done. Then hand the session back to me."
 Enter
-Sleep 32s
+Sleep 38s
 
-# The local model builds during this cut.
+# The local model builds during this cut; the watcher is waiting on it.
 Hide
-Sleep 80s
+Sleep 45s
 Show
 
-# 2. Bring the build home.
-Type "should be done by now — pull whatever it built into ./site and show me what came back."
-Enter
-Sleep 50s
-
+# Nothing is typed here — the watcher returns on its own with the report and files.
+Sleep 70s
 Sleep 3s

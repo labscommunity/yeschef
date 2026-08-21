@@ -757,21 +757,29 @@ def install_skill(
         False, "--user", help="Install for all projects (~/.claude/skills/)."
     ),
 ) -> None:
-    """Install the Claude Code skill that teaches agents how and when to use the fleet."""
+    """Install the Claude Code skill and the farmteam-watcher subagent."""
     from importlib import resources
     from pathlib import Path
 
-    source = resources.files("farmteam.resources.skill")
-    target_root = (
-        Path("~/.claude/skills").expanduser() if user else Path(project) / ".claude" / "skills"
-    )
-    target = target_root / "farmteam"
-    target.mkdir(parents=True, exist_ok=True)
-    for entry in source.iterdir():
+    claude_root = Path("~/.claude").expanduser() if user else Path(project) / ".claude"
+
+    skill_target = claude_root / "skills" / "farmteam"
+    skill_target.mkdir(parents=True, exist_ok=True)
+    for entry in resources.files("farmteam.resources.skill").iterdir():
         if entry.is_file() and not entry.name.startswith("__"):
-            (target / entry.name).write_text(entry.read_text())
-    console.print(f"[green]✓[/green] installed the farmteam skill into {target}")
-    console.print("  Claude Code will pick it up in that scope on its next run.")
+            (skill_target / entry.name).write_text(entry.read_text())
+    console.print(f"[green]✓[/green] skill → {skill_target}")
+
+    agents_target = claude_root / "agents"
+    agents_target.mkdir(parents=True, exist_ok=True)
+    for entry in resources.files("farmteam.resources.agents").iterdir():
+        if entry.is_file() and not entry.name.startswith("__"):
+            (agents_target / entry.name).write_text(entry.read_text())
+    console.print(
+        f"[green]✓[/green] farmteam-watcher subagent → {agents_target} "
+        "(dispatched tasks can appear in the subagent panel)"
+    )
+    console.print("  Claude Code picks both up in that scope on its next run.")
 
 
 # =============================================================== advanced (hub/agent)
