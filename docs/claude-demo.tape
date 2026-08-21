@@ -1,8 +1,9 @@
-# Renders docs/claude-demo.gif — farmteam driven from inside a Claude Code session.
+# Renders docs/claude-demo.gif — the full buildout loop from inside Claude Code:
+# dispatch to a local worker, then pull the files it built into the project.
 #
-# Unlike docs/demo.tape this one is live, not a replay: a real Claude Code session
-# calling the farmteam MCP tools against a real hub with real local workers. Recording
-# it again needs the hub reachable and the MCP server wired (`farmteam up` does both).
+# Live session, not a replay. Playback runs at 2x so the GIF stays short; typing speed
+# is set slow here so it reads naturally after the speed-up. The worker's build happens
+# during the hidden gap between the two prompts (a cut, like any screencast).
 #
 #   vhs docs/claude-demo.tape
 
@@ -12,29 +13,35 @@ Set FontSize 15
 Set Width 1240
 Set Height 720
 Set Padding 20
+Set TypingSpeed 60ms
+Set PlaybackSpeed 2.0
 Set Theme "Catppuccin Mocha"
-Set TypingSpeed 28ms
 
-# Launch and get past the workspace-trust prompt off camera, so the recording opens
-# on a working session rather than on setup.
+# Launch and clear the workspace-trust prompt off camera.
 Hide
 Type "cd /tmp/ft-demo && clear"
 Enter
 Sleep 1s
-Type "claude --allowedTools 'mcp__farmteam__list_agents,mcp__farmteam__submit_task,mcp__farmteam__task_status,mcp__farmteam__task_result,Read'"
+Type "claude --allowedTools 'mcp__farmteam__list_agents,mcp__farmteam__submit_task,mcp__farmteam__task_status,mcp__farmteam__wait_task,mcp__farmteam__task_result,mcp__farmteam__task_files,mcp__farmteam__task_file,Read,Write'"
 Enter
 Sleep 5s
 Enter
 Sleep 14s
 Show
 
-# Dispatch the buildout and keep working.
-Type "I specced the landing page in DESIGN.md. Send the buildout to my farm team and don't wait around — just give me the task id."
+# 1. Dispatch and keep the session free.
+Type "Read DESIGN.md and dispatch the buildout to my farm team's builder. Don't wait on it — just give me the task id."
 Enter
-Sleep 40s
+Sleep 32s
 
-# Check on it from the same session, later.
-Type "is it done yet?"
+# The local model builds during this cut.
+Hide
+Sleep 80s
+Show
+
+# 2. Bring the build home.
+Type "should be done by now — pull whatever it built into ./site and show me what came back."
 Enter
-Sleep 30s
+Sleep 50s
+
 Sleep 3s
