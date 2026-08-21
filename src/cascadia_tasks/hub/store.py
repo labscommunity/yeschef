@@ -1,0 +1,946 @@
+"""SQLite-backed hub state.
+
+Single-writer, WAL mode, guarded by one re-entrant lock. Every method is synchronous and
+short; async handlers call straight in. All timestamps are assigned here.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import secrets
+import sqlite3
+import threading
+from pathlib import Path
+
+from ..models import (
+    DEFAULT_TASK_TIMEOUT_S,
+    HEARTBEAT_TTL_S,
+    Agent,
+    AgentKind,
+    ErrorCode,
+    EventKind,
+    HubError,
+    Message,
+    Room,
+    RoomPolicy,
+    Task,
+    TaskEvent,
+    TaskState,
+    TurnPolicy,
+    new_id,
+    not_found,
+    now,
+)
+from .events import EventBus
+
+SCHEMA_PATH = Path(__file__).with_name("schema.sql")
+MAX_TASK_ATTEMPTS = 2
+
+
+def estimate_tokens(text: str) -> int:
+    return max(1, len(text) // 4)
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _dm_key(a: str, b: str) -> str:
+    return "\x1f".join(sorted((a, b)))
+
+
+class Store:
+    def __init__(self, path: str | Path, bus: EventBus | None = None) -> None:
+        self.path = str(path)
+        self.bus = bus or EventBus()
+        self._lock = threading.RLock()
+        if self.path != ":memory:":
+            Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+        self._db = sqlite3.connect(self.path, check_same_thread=False)
+        self._db.row_factory = sqlite3.Row
+        self._db.executescript(SCHEMA_PATH.read_text())
+        self._db.commit()
+
+    def close(self) -> None:
+        with self._lock:
+            self._db.close()
+
+    # ---------------------------------------------------------------- agents
+
+    def register_agent(
+        self,
+        name: str,
+        kind: AgentKind = AgentKind.WORKER,
+        node: str | None = None,
+        backend: str | None = None,
+        tags: list[str] | None = None,
+    ) -> tuple[Agent, str]:
+        """Register or re-register. Re-registration mints a fresh token."""
+        if not name or "\x1f" in name:
+            raise HubError(ErrorCode.INVALID, "invalid agent name")
+        token = secrets.token_urlsafe(24)
+        ts = now()
+        with self._lock:
+            existing = self._db.execute(
+                "SELECT created_at FROM agents WHERE name = ?", (name,)
+            ).fetchone()
+            created_at = existing["created_at"] if existing else ts
+            self._db.execute(
+                """INSERT INTO agents (name, kind, node, backend, tags, token_hash, last_seen,
+                                       created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(name) DO UPDATE SET
+                       kind = excluded.kind, node = excluded.node, backend = excluded.backend,
+                       tags = excluded.tags, token_hash = excluded.token_hash,
+                       last_seen = excluded.last_seen""",
+                (
+                    name,
+                    str(kind),
+                    node,
+                    backend,
+                    json.dumps(tags or []),
+                    _hash_token(token),
+                    ts,
+                    created_at,
+                ),
+            )
+            self._db.commit()
+        agent = self.get_agent(name)
+        assert agent is not None
+        return agent, token
+
+    def ensure_identity(self, name: str, kind: AgentKind = AgentKind.CLAUDE) -> Agent:
+        """Lazily create an addressable identity (used by Claude Code sessions)."""
+        with self._lock:
+            row = self._db.execute("SELECT * FROM agents WHERE name = ?", (name,)).fetchone()
+            ts = now()
+            if row is None:
+                self._db.execute(
+                    """INSERT INTO agents (name, kind, tags, last_seen, created_at)
+                       VALUES (?, ?, '[]', ?, ?)""",
+                    (name, str(kind), ts, ts),
+                )
+            else:
+                self._db.execute("UPDATE agents SET last_seen = ? WHERE name = ?", (ts, name))
+            self._db.commit()
+        agent = self.get_agent(name)
+        assert agent is not None
+        return agent
+
+    def rename_identity(self, old: str, new: str, kind: AgentKind = AgentKind.CLAUDE) -> Agent:
+        """Re-label a session identity, carrying room membership across."""
+        if old == new:
+            return self.ensure_identity(new, kind)
+        self.ensure_identity(new, kind)
+        with self._lock:
+            self._db.execute(
+                """UPDATE OR IGNORE room_members SET agent = ? WHERE agent = ?""", (new, old)
+            )
+            self._db.execute("DELETE FROM room_members WHERE agent = ?", (old,))
+            self._db.execute("UPDATE rooms SET floor_holder = ? WHERE floor_holder = ?", (new, old))
+            self._db.execute("DELETE FROM agents WHERE name = ? AND kind = 'claude'", (old,))
+            self._db.commit()
+        agent = self.get_agent(new)
+        assert agent is not None
+        return agent
+
+    def verify_token(self, name: str, token: str) -> bool:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT token_hash FROM agents WHERE name = ?", (name,)
+            ).fetchone()
+        if row is None or not row["token_hash"]:
+            return False
+        return secrets.compare_digest(row["token_hash"], _hash_token(token))
+
+    def heartbeat(self, name: str) -> None:
+        with self._lock:
+            self._db.execute("UPDATE agents SET last_seen = ? WHERE name = ?", (now(), name))
+            self._db.commit()
+
+    def get_agent(self, name: str) -> Agent | None:
+        with self._lock:
+            row = self._db.execute("SELECT * FROM agents WHERE name = ?", (name,)).fetchone()
+        return self._row_to_agent(row) if row else None
+
+    def require_agent(self, name: str) -> Agent:
+        agent = self.get_agent(name)
+        if agent is None:
+            raise not_found(f"agent '{name}'")
+        return agent
+
+    def list_agents(self, kind: AgentKind | None = None) -> list[Agent]:
+        sql = "SELECT * FROM agents"
+        args: tuple = ()
+        if kind is not None:
+            sql += " WHERE kind = ?"
+            args = (str(kind),)
+        sql += " ORDER BY name"
+        with self._lock:
+            rows = self._db.execute(sql, args).fetchall()
+        return [self._row_to_agent(r) for r in rows]
+
+    def _row_to_agent(self, row: sqlite3.Row) -> Agent:
+        return Agent(
+            name=row["name"],
+            kind=AgentKind(row["kind"]),
+            node=row["node"],
+            backend=row["backend"],
+            tags=json.loads(row["tags"]),
+            last_seen=row["last_seen"],
+            created_at=row["created_at"],
+        )
+
+    # ----------------------------------------------------------------- rooms
+
+    def create_room(
+        self,
+        topic: str,
+        created_by: str,
+        participants: list[str] | None = None,
+        policy: RoomPolicy | None = None,
+        open_room: bool = False,
+        room_id: str | None = None,
+        dm_key: str | None = None,
+    ) -> Room:
+        policy = policy or RoomPolicy()
+        rid = room_id or new_id("room")
+        ts = now()
+        members = list(dict.fromkeys([created_by, *(participants or [])]))
+        with self._lock:
+            self._db.execute(
+                """INSERT INTO rooms (id, topic, created_by, open, policy_json, dm_key,
+                                      last_activity, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    rid,
+                    topic,
+                    created_by,
+                    int(open_room),
+                    json.dumps(policy.to_dict()),
+                    dm_key,
+                    ts,
+                    ts,
+                ),
+            )
+            for pos, member in enumerate(members):
+                self._db.execute(
+                    """INSERT OR IGNORE INTO room_members (room_id, agent, ring_pos, joined_at)
+                       VALUES (?, ?, ?, ?)""",
+                    (rid, member, pos, ts),
+                )
+            self._db.commit()
+        room = self.get_room(rid)
+        assert room is not None
+        if policy.turn_policy is TurnPolicy.ROUND_ROBIN:
+            self._grant_floor(room, self._first_worker(room))
+            room = self.get_room(rid) or room
+        invitees = [m for m in members if m != created_by]
+        self.bus.publish_many(
+            invitees, EventKind.ROOM_INVITE, {"room": room.to_dict(), "by": created_by}
+        )
+        return room
+
+    def get_or_create_dm(self, a: str, b: str) -> Room:
+        key = _dm_key(a, b)
+        with self._lock:
+            row = self._db.execute("SELECT id FROM rooms WHERE dm_key = ?", (key,)).fetchone()
+        if row:
+            room = self.get_room(row["id"])
+            if room is not None:
+                return room
+        return self.create_room(
+            topic=f"{a} ↔ {b}", created_by=a, participants=[b], dm_key=key, room_id=new_id("dm")
+        )
+
+    def get_room(self, room_id: str) -> Room | None:
+        with self._lock:
+            row = self._db.execute("SELECT * FROM rooms WHERE id = ?", (room_id,)).fetchone()
+            if row is None:
+                return None
+            members = [
+                r["agent"]
+                for r in self._db.execute(
+                    "SELECT agent FROM room_members WHERE room_id = ? ORDER BY ring_pos, joined_at",
+                    (room_id,),
+                ).fetchall()
+            ]
+        return Room(
+            id=row["id"],
+            topic=row["topic"],
+            created_by=row["created_by"],
+            open=bool(row["open"]),
+            policy=RoomPolicy.from_dict(json.loads(row["policy_json"])),
+            archived=bool(row["archived"]),
+            archived_reason=row["archived_reason"],
+            dm_key=row["dm_key"],
+            created_at=row["created_at"],
+            members=members,
+        )
+
+    def require_room(self, room_id: str) -> Room:
+        room = self.get_room(room_id)
+        if room is None:
+            raise not_found(f"room '{room_id}'")
+        return room
+
+    def list_rooms(self, agent: str | None = None, include_archived: bool = False) -> list[Room]:
+        sql = "SELECT r.id FROM rooms r"
+        args: list = []
+        clauses = []
+        if agent:
+            sql += " JOIN room_members m ON m.room_id = r.id"
+            clauses.append("m.agent = ?")
+            args.append(agent)
+        if not include_archived:
+            clauses.append("r.archived = 0")
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY r.last_activity DESC"
+        with self._lock:
+            ids = [r["id"] for r in self._db.execute(sql, args).fetchall()]
+        return [room for room in (self.get_room(i) for i in ids) if room is not None]
+
+    def join_room(self, room_id: str, agent: str) -> Room:
+        room = self.require_room(room_id)
+        if room.archived:
+            raise HubError(ErrorCode.CONFLICT, "room is archived", 409)
+        if agent in room.members:
+            return room
+        with self._lock:
+            pos = self._db.execute(
+                "SELECT COALESCE(MAX(ring_pos), -1) + 1 AS p FROM room_members WHERE room_id = ?",
+                (room_id,),
+            ).fetchone()["p"]
+            self._db.execute(
+                "INSERT OR IGNORE INTO room_members (room_id, agent, ring_pos, joined_at) "
+                "VALUES (?, ?, ?, ?)",
+                (room_id, agent, pos, now()),
+            )
+            self._db.commit()
+        room = self.require_room(room_id)
+        self.bus.publish_many(
+            [m for m in room.members if m != agent],
+            EventKind.ROOM_INVITE,
+            {"room": room.to_dict(), "joined": agent},
+        )
+        return room
+
+    def leave_room(self, room_id: str, agent: str) -> None:
+        room = self.require_room(room_id)
+        with self._lock:
+            self._db.execute(
+                "DELETE FROM room_members WHERE room_id = ? AND agent = ?", (room_id, agent)
+            )
+            self._db.commit()
+        if room.policy.turn_policy is TurnPolicy.ROUND_ROBIN:
+            fresh = self.get_room(room_id)
+            if fresh and self._floor_holder(room_id) == agent:
+                self._grant_floor(fresh, self._first_worker(fresh))
+
+    def archive_room(self, room_id: str, reason: str) -> Room:
+        with self._lock:
+            self._db.execute(
+                "UPDATE rooms SET archived = 1, archived_reason = ?, floor_holder = NULL "
+                "WHERE id = ? AND archived = 0",
+                (reason, room_id),
+            )
+            self._db.commit()
+        room = self.require_room(room_id)
+        self.bus.publish_many(
+            room.members, EventKind.ROOM_ARCHIVED, {"room_id": room_id, "reason": reason}
+        )
+        return room
+
+    # ------------------------------------------------------------ floor control
+
+    def _floor_holder(self, room_id: str) -> str | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT floor_holder FROM rooms WHERE id = ?", (room_id,)
+            ).fetchone()
+        return row["floor_holder"] if row else None
+
+    def _worker_ring(self, room: Room) -> list[str]:
+        """Members that take scheduled turns. Claude identities interject, unscheduled."""
+        ring = []
+        for name in room.members:
+            agent = self.get_agent(name)
+            if agent is not None and agent.kind is AgentKind.WORKER:
+                ring.append(name)
+        return ring
+
+    def _first_worker(self, room: Room) -> str | None:
+        ring = self._worker_ring(room)
+        return ring[0] if ring else None
+
+    def _grant_floor(self, room: Room, holder: str | None) -> None:
+        with self._lock:
+            self._db.execute(
+                "UPDATE rooms SET floor_holder = ? WHERE id = ?", (holder, room.id)
+            )
+            self._db.commit()
+        if holder:
+            self.bus.publish(
+                holder, EventKind.FLOOR_GRANTED, {"room_id": room.id, "topic": room.topic}
+            )
+
+    def _advance_floor(self, room: Room, sender: str) -> None:
+        """Worker turn passes to the next in ring; a Claude interjection re-anchors."""
+        ring = self._worker_ring(room)
+        if not ring:
+            self._grant_floor(room, None)
+            return
+        if sender in ring:
+            nxt = ring[(ring.index(sender) + 1) % len(ring)]
+        else:
+            nxt = ring[0]
+        self._grant_floor(room, nxt)
+
+    # -------------------------------------------------------------- messages
+
+    def post_message(
+        self,
+        room_id: str,
+        sender: str,
+        body: str,
+        data: dict | None = None,
+        reply_to: str | None = None,
+        mentions: list[str] | None = None,
+        client_msg_id: str | None = None,
+        tokens: int | None = None,
+    ) -> Message:
+        room = self.require_room(room_id)
+        if room.archived:
+            raise HubError(
+                ErrorCode.CONFLICT, f"room is archived ({room.archived_reason})", 409
+            )
+
+        if sender not in room.members:
+            if room.open:
+                room = self.join_room(room_id, sender)
+            else:
+                raise HubError(ErrorCode.FORBIDDEN, "not a member of this room", 403)
+
+        agent = self.get_agent(sender)
+        is_claude = agent is not None and agent.kind is AgentKind.CLAUDE
+        if room.policy.turn_policy is TurnPolicy.ROUND_ROBIN and not is_claude:
+            holder = self._floor_holder(room_id)
+            if holder is not None and holder != sender:
+                raise HubError(
+                    ErrorCode.CONFLICT, f"not your turn (floor held by '{holder}')", 409
+                )
+
+        if client_msg_id:
+            with self._lock:
+                dupe = self._db.execute(
+                    "SELECT * FROM messages WHERE sender = ? AND client_msg_id = ?",
+                    (sender, client_msg_id),
+                ).fetchone()
+            if dupe:
+                return self._row_to_message(dupe)
+
+        mentions = mentions if mentions is not None else _parse_mentions(body, room.members)
+        cost = tokens if tokens is not None else estimate_tokens(body)
+        ts = now()
+        mid = new_id("msg")
+        with self._lock:
+            seq = self._db.execute(
+                "SELECT next_seq FROM rooms WHERE id = ?", (room_id,)
+            ).fetchone()["next_seq"]
+            self._db.execute(
+                """INSERT INTO messages (id, room_id, seq, sender, body, data_json, reply_to,
+                                         mentions_json, client_msg_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    mid,
+                    room_id,
+                    seq,
+                    sender,
+                    body,
+                    json.dumps(data) if data is not None else None,
+                    reply_to,
+                    json.dumps(mentions),
+                    client_msg_id,
+                    ts,
+                ),
+            )
+            self._db.execute(
+                """UPDATE rooms SET next_seq = next_seq + 1, message_count = message_count + 1,
+                                    total_tokens = total_tokens + ?, last_activity = ?
+                   WHERE id = ?""",
+                (cost, ts, room_id),
+            )
+            self._db.commit()
+            row = self._db.execute("SELECT * FROM messages WHERE id = ?", (mid,)).fetchone()
+        message = self._row_to_message(row)
+
+        if room.policy.turn_policy is TurnPolicy.ROUND_ROBIN:
+            self._advance_floor(room, sender)
+
+        self.bus.publish_many(
+            [m for m in room.members if m != sender],
+            EventKind.MESSAGE,
+            {"message": message.to_dict(), "room_topic": room.topic},
+        )
+        self._enforce_room_policy(room_id, body)
+        return message
+
+    def _enforce_room_policy(self, room_id: str, body: str) -> None:
+        """Bound every room by construction: stop phrase, message cap, token budget."""
+        room = self.get_room(room_id)
+        if room is None or room.archived:
+            return
+        policy = room.policy
+        with self._lock:
+            row = self._db.execute(
+                "SELECT message_count, total_tokens FROM rooms WHERE id = ?", (room_id,)
+            ).fetchone()
+        if policy.stop_phrase and policy.stop_phrase in body:
+            self.archive_room(room_id, "stop_phrase")
+        elif policy.max_messages is not None and row["message_count"] >= policy.max_messages:
+            self.archive_room(room_id, "max_messages")
+        elif policy.max_total_tokens is not None and row["total_tokens"] >= policy.max_total_tokens:
+            self.archive_room(room_id, "max_total_tokens")
+
+    def fetch_messages(
+        self, room_id: str, after_seq: int = 0, limit: int = 100
+    ) -> list[Message]:
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT * FROM messages WHERE room_id = ? AND seq > ?
+                   ORDER BY seq LIMIT ?""",
+                (room_id, after_seq, limit),
+            ).fetchall()
+        return [self._row_to_message(r) for r in rows]
+
+    def fetch_inbox(
+        self, agent: str, after_cursor: int = 0, limit: int = 100, room_id: str | None = None
+    ) -> tuple[list[dict], int]:
+        """Cross-room cursor fetch for one identity. Cursor is the global message rowid."""
+        sql = """SELECT m.*, m.rowid AS cursor FROM messages m
+                 JOIN room_members rm ON rm.room_id = m.room_id AND rm.agent = ?
+                 WHERE m.rowid > ? AND m.sender != ?"""
+        args: list = [agent, after_cursor, agent]
+        if room_id:
+            sql += " AND m.room_id = ?"
+            args.append(room_id)
+        sql += " ORDER BY m.rowid LIMIT ?"
+        args.append(limit)
+        with self._lock:
+            rows = self._db.execute(sql, args).fetchall()
+            top = self._db.execute("SELECT COALESCE(MAX(rowid), 0) AS c FROM messages").fetchone()
+        out = []
+        for row in rows:
+            item = self._row_to_message(row).to_dict()
+            item["cursor"] = row["cursor"]
+            out.append(item)
+        cursor = out[-1]["cursor"] if out else max(after_cursor, top["c"])
+        return out, cursor
+
+    def _row_to_message(self, row: sqlite3.Row) -> Message:
+        return Message(
+            id=row["id"],
+            room_id=row["room_id"],
+            seq=row["seq"],
+            sender=row["sender"],
+            body=row["body"],
+            data=json.loads(row["data_json"]) if row["data_json"] else None,
+            reply_to=row["reply_to"],
+            mentions=json.loads(row["mentions_json"]),
+            created_at=row["created_at"],
+        )
+
+    # ----------------------------------------------------------------- tasks
+
+    def submit_task(
+        self,
+        title: str,
+        spec: str,
+        created_by: str,
+        assignee: str | None = None,
+        selector: str | None = None,
+        priority: int = 0,
+        timeout_s: float = DEFAULT_TASK_TIMEOUT_S,
+        dedupe_key: str | None = None,
+    ) -> Task:
+        if not assignee and not selector:
+            raise HubError(ErrorCode.INVALID, "assignee or selector required")
+        if dedupe_key:
+            with self._lock:
+                row = self._db.execute(
+                    "SELECT id FROM tasks WHERE dedupe_key = ?", (dedupe_key,)
+                ).fetchone()
+            if row:
+                existing = self.get_task(row["id"])
+                if existing is not None:
+                    return existing
+        tid = new_id("task")
+        ts = now()
+        with self._lock:
+            self._db.execute(
+                """INSERT INTO tasks (id, title, spec, created_by, state, assignee, selector,
+                                      priority, timeout_s, dedupe_key, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    tid,
+                    title,
+                    spec,
+                    created_by,
+                    str(TaskState.QUEUED),
+                    assignee,
+                    selector,
+                    priority,
+                    timeout_s,
+                    dedupe_key,
+                    ts,
+                ),
+            )
+            self._db.commit()
+        task = self.get_task(tid)
+        assert task is not None
+        self._log_task(tid, "submitted", {"by": created_by, "target": assignee or selector})
+        self._announce_task(task)
+        return task
+
+    def _candidates(self, task: Task) -> list[str]:
+        if task.assignee:
+            return [task.assignee]
+        if not task.selector:
+            return []
+        return [
+            a.name
+            for a in self.list_agents(kind=AgentKind.WORKER)
+            if a.matches(task.selector)
+        ]
+
+    def _announce_task(self, task: Task) -> None:
+        self.bus.publish_many(
+            self._candidates(task), EventKind.TASK_ASSIGNED, {"task": task.to_dict()}
+        )
+
+    def claim_task(self, task_id: str, agent: str) -> Task:
+        """Atomic: first caller wins, everyone else gets 409."""
+        ts = now()
+        with self._lock:
+            cur = self._db.execute(
+                """UPDATE tasks SET state = ?, assignee = ?, claimed_at = ?, attempts = attempts + 1
+                   WHERE id = ? AND state = ?""",
+                (str(TaskState.CLAIMED), agent, ts, task_id, str(TaskState.QUEUED)),
+            )
+            self._db.commit()
+            claimed = cur.rowcount == 1
+        task = self.get_task(task_id)
+        if task is None:
+            raise not_found(f"task '{task_id}'")
+        if not claimed:
+            raise HubError(
+                ErrorCode.CONFLICT, f"task already {task.state} (held by {task.assignee})", 409
+            )
+        self._log_task(task_id, "claimed", {"by": agent})
+        self._notify_task_watchers(task)
+        return task
+
+    def next_task_for(self, agent_name: str) -> Task | None:
+        """Highest-priority queued task this agent could claim."""
+        agent = self.get_agent(agent_name)
+        if agent is None:
+            return None
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT * FROM tasks WHERE state = ? ORDER BY priority DESC, created_at""",
+                (str(TaskState.QUEUED),),
+            ).fetchall()
+        for row in rows:
+            task = self._row_to_task(row)
+            if task.assignee == agent_name:
+                return task
+            if task.selector and agent.matches(task.selector):
+                return task
+        return None
+
+    def update_progress(
+        self, task_id: str, agent: str, pct: float | None = None, message: str | None = None
+    ) -> Task:
+        task = self._require_holder(task_id, agent)
+        if task.state is TaskState.CLAIMED:
+            self._set_state(task_id, TaskState.WORKING)
+        with self._lock:
+            self._db.execute(
+                "UPDATE tasks SET progress_pct = COALESCE(?, progress_pct), "
+                "progress_msg = COALESCE(?, progress_msg) WHERE id = ?",
+                (pct, message, task_id),
+            )
+            self._db.commit()
+        self._log_task(task_id, "progress", {"pct": pct, "message": message})
+        fresh = self.get_task(task_id)
+        assert fresh is not None
+        self._notify_task_watchers(fresh)
+        return fresh
+
+    def complete_task(self, task_id: str, agent: str, result: dict | None) -> Task:
+        self._require_holder(task_id, agent)
+        return self._finish(task_id, TaskState.COMPLETED, result=result)
+
+    def fail_task(self, task_id: str, agent: str, error: str) -> Task:
+        self._require_holder(task_id, agent)
+        return self._finish(task_id, TaskState.FAILED, error=error)
+
+    def cancel_task(self, task_id: str, by: str) -> Task:
+        task = self.get_task(task_id)
+        if task is None:
+            raise not_found(f"task '{task_id}'")
+        if task.state.terminal:
+            raise HubError(ErrorCode.CONFLICT, f"task already {task.state}", 409)
+        holder = task.assignee
+        finished = self._finish(task_id, TaskState.CANCELLED, error=f"cancelled by {by}")
+        if holder:
+            self.bus.publish(holder, EventKind.TASK_CANCELLED, {"task_id": task_id, "by": by})
+        return finished
+
+    def request_input(self, task_id: str, agent: str, question: str) -> Task:
+        """Agent needs a human/Claude answer: opens the task room and parks the task."""
+        self._require_holder(task_id, agent)
+        room = self.ensure_task_room(task_id)
+        self._set_state(task_id, TaskState.INPUT_REQUIRED)
+        self.post_message(room.id, agent, question)
+        self._log_task(task_id, "input_required", {"question": question})
+        task = self.get_task(task_id)
+        assert task is not None
+        self._notify_task_watchers(task)
+        return task
+
+    def provide_input(self, task_id: str, by: str, message: str) -> Task:
+        task = self.get_task(task_id)
+        if task is None:
+            raise not_found(f"task '{task_id}'")
+        if task.state is not TaskState.INPUT_REQUIRED:
+            raise HubError(ErrorCode.CONFLICT, f"task is {task.state}, not input_required", 409)
+        room = self.ensure_task_room(task_id)
+        if by not in room.members:
+            self.join_room(room.id, by)
+        self.post_message(room.id, by, message)
+        self._set_state(task_id, TaskState.WORKING)
+        self._log_task(task_id, "input_provided", {"by": by})
+        fresh = self.get_task(task_id)
+        assert fresh is not None
+        if fresh.assignee:
+            self.bus.publish(
+                fresh.assignee,
+                EventKind.TASK_UPDATED,
+                {"task": fresh.to_dict(), "input": message, "by": by},
+            )
+        return fresh
+
+    def ensure_task_room(self, task_id: str) -> Room:
+        """A task grows a room the moment anyone needs to discuss it."""
+        task = self.get_task(task_id)
+        if task is None:
+            raise not_found(f"task '{task_id}'")
+        if task.room_id:
+            room = self.get_room(task.room_id)
+            if room is not None:
+                return room
+        members = [m for m in (task.created_by, task.assignee) if m]
+        room = self.create_room(
+            topic=f"task: {task.title}",
+            created_by=task.created_by,
+            participants=members[1:],
+            room_id=f"room_{task.id}",
+        )
+        with self._lock:
+            self._db.execute("UPDATE tasks SET room_id = ? WHERE id = ?", (room.id, task_id))
+            self._db.commit()
+        return room
+
+    def get_task(self, task_id: str) -> Task | None:
+        with self._lock:
+            row = self._db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        return self._row_to_task(row) if row else None
+
+    def require_task(self, task_id: str) -> Task:
+        task = self.get_task(task_id)
+        if task is None:
+            raise not_found(f"task '{task_id}'")
+        return task
+
+    def list_tasks(
+        self,
+        state: TaskState | None = None,
+        assignee: str | None = None,
+        created_by: str | None = None,
+        limit: int = 100,
+    ) -> list[Task]:
+        sql = "SELECT * FROM tasks"
+        clauses, args = [], []
+        if state is not None:
+            clauses.append("state = ?")
+            args.append(str(state))
+        if assignee:
+            clauses.append("assignee = ?")
+            args.append(assignee)
+        if created_by:
+            clauses.append("created_by = ?")
+            args.append(created_by)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        args.append(limit)
+        with self._lock:
+            rows = self._db.execute(sql, args).fetchall()
+        return [self._row_to_task(r) for r in rows]
+
+    def task_events(self, task_id: str, limit: int = 50) -> list[TaskEvent]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM task_events WHERE task_id = ? ORDER BY created_at DESC LIMIT ?",
+                (task_id, limit),
+            ).fetchall()
+        events = [
+            TaskEvent(
+                id=r["id"],
+                task_id=r["task_id"],
+                kind=r["kind"],
+                payload=json.loads(r["payload_json"]),
+                created_at=r["created_at"],
+            )
+            for r in rows
+        ]
+        events.reverse()
+        return events
+
+    def _require_holder(self, task_id: str, agent: str) -> Task:
+        task = self.get_task(task_id)
+        if task is None:
+            raise not_found(f"task '{task_id}'")
+        if task.assignee != agent:
+            raise HubError(ErrorCode.FORBIDDEN, f"task is held by '{task.assignee}'", 403)
+        if task.state.terminal:
+            raise HubError(ErrorCode.CONFLICT, f"task already {task.state}", 409)
+        return task
+
+    def _set_state(self, task_id: str, state: TaskState) -> None:
+        with self._lock:
+            self._db.execute("UPDATE tasks SET state = ? WHERE id = ?", (str(state), task_id))
+            self._db.commit()
+
+    def _finish(
+        self,
+        task_id: str,
+        state: TaskState,
+        result: dict | None = None,
+        error: str | None = None,
+    ) -> Task:
+        with self._lock:
+            self._db.execute(
+                """UPDATE tasks SET state = ?, result_json = ?, error = ?, finished_at = ?,
+                                    progress_pct = CASE WHEN ? = 'completed' THEN 100.0
+                                                        ELSE progress_pct END
+                   WHERE id = ?""",
+                (
+                    str(state),
+                    json.dumps(result) if result is not None else None,
+                    error,
+                    now(),
+                    str(state),
+                    task_id,
+                ),
+            )
+            self._db.commit()
+        self._log_task(task_id, str(state), {"error": error} if error else {})
+        task = self.get_task(task_id)
+        assert task is not None
+        self._notify_task_watchers(task)
+        return task
+
+    def _log_task(self, task_id: str, kind: str, payload: dict) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO task_events (id, task_id, kind, payload_json, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (new_id("ev"), task_id, kind, json.dumps(payload), now()),
+            )
+            self._db.commit()
+
+    def _notify_task_watchers(self, task: Task) -> None:
+        watchers = {task.created_by}
+        if task.assignee:
+            watchers.add(task.assignee)
+        self.bus.publish_many(sorted(watchers), EventKind.TASK_UPDATED, {"task": task.to_dict()})
+
+    def _row_to_task(self, row: sqlite3.Row) -> Task:
+        return Task(
+            id=row["id"],
+            title=row["title"],
+            spec=row["spec"],
+            created_by=row["created_by"],
+            state=TaskState(row["state"]),
+            assignee=row["assignee"],
+            selector=row["selector"],
+            priority=row["priority"],
+            timeout_s=row["timeout_s"],
+            dedupe_key=row["dedupe_key"],
+            room_id=row["room_id"],
+            progress_pct=row["progress_pct"],
+            progress_msg=row["progress_msg"],
+            result=json.loads(row["result_json"]) if row["result_json"] else None,
+            error=row["error"],
+            attempts=row["attempts"],
+            created_at=row["created_at"],
+            claimed_at=row["claimed_at"],
+            finished_at=row["finished_at"],
+        )
+
+    # --------------------------------------------------------------- janitor
+
+    def sweep(self) -> dict[str, int]:
+        """Reclaim tasks from lost agents, time out overruns, archive idle rooms."""
+        ref = now()
+        stats = {"reclaimed": 0, "timed_out": 0, "rooms_archived": 0}
+
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM tasks WHERE state IN (?, ?, ?)",
+                (str(TaskState.CLAIMED), str(TaskState.WORKING), str(TaskState.INPUT_REQUIRED)),
+            ).fetchall()
+        for row in rows:
+            task = self._row_to_task(row)
+            if task.claimed_at and ref - task.claimed_at > task.timeout_s:
+                self._finish(task.id, TaskState.FAILED, error="timeout")
+                stats["timed_out"] += 1
+                continue
+            if task.state is TaskState.INPUT_REQUIRED:
+                continue  # parked on a human, not on the agent
+            holder = self.get_agent(task.assignee) if task.assignee else None
+            if holder is None or ref - holder.last_seen > HEARTBEAT_TTL_S:
+                if task.attempts >= MAX_TASK_ATTEMPTS:
+                    self._finish(task.id, TaskState.FAILED, error="agent_lost")
+                else:
+                    with self._lock:
+                        self._db.execute(
+                            "UPDATE tasks SET state = ?, assignee = NULL, claimed_at = NULL "
+                            "WHERE id = ?",
+                            (str(TaskState.QUEUED), task.id),
+                        )
+                        self._db.commit()
+                    self._log_task(task.id, "requeued", {"reason": "agent_lost"})
+                    requeued = self.get_task(task.id)
+                    if requeued is not None:
+                        self._announce_task(requeued)
+                stats["reclaimed"] += 1
+
+        with self._lock:
+            room_rows = self._db.execute(
+                "SELECT id, policy_json, last_activity FROM rooms WHERE archived = 0"
+            ).fetchall()
+        for row in room_rows:
+            policy = RoomPolicy.from_dict(json.loads(row["policy_json"]))
+            if policy.idle_timeout_s and ref - row["last_activity"] > policy.idle_timeout_s:
+                self.archive_room(row["id"], "idle_timeout")
+                stats["rooms_archived"] += 1
+        return stats
+
+
+def _parse_mentions(body: str, members: list[str]) -> list[str]:
+    return [m for m in members if f"@{m}" in body]

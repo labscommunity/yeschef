@@ -1,0 +1,47 @@
+[project]
+name = "cascadia-tasks"
+version = "0.1.0"
+description = "Task dispatch and multi-agent conversation hub for Claude Code and local AI agents"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "UNLICENSED" }
+
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "httpx>=0.27",
+    "fastmcp>=2.10",
+    "typer>=0.15",
+    "rich>=13.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+    "asgi-lifespan>=2.1",
+]
+
+[project.scripts]
+cascadia-tasks = "cascadia_tasks.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cascadia_tasks"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "W"]
+ignore = ["B008"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
