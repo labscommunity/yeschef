@@ -633,8 +633,9 @@ def _save_transcript(room_id: str, path: str, hub: str | None, complete: bool) -
 def replay_cmd(
     transcript: str = typer.Argument(..., help="A JSON transcript saved with --record."),
     speed: float = typer.Option(1.0, help="Multiplier on the real inter-message gaps."),
-    tokens_per_sec: float = typer.Option(40.0, help="Streaming rate within a message."),
-    max_gap: float = typer.Option(2.5, help="Cap between messages, seconds."),
+    words_per_sec: float = typer.Option(13.0, help="Model output cadence."),
+    human_words_per_sec: float = typer.Option(6.0, help="Cadence for operator turns."),
+    max_gap: float = typer.Option(1.2, help="Cap between messages, seconds."),
     no_delay: bool = typer.Option(False, "--no-delay", help="Render instantly (sanity checks)."),
 ) -> None:
     """Re-stream a recorded conversation with realistic pacing.
@@ -652,7 +653,11 @@ def replay_cmd(
         payload,
         console,
         ReplayOptions(
-            speed=speed, tokens_per_sec=tokens_per_sec, max_gap_s=max_gap, no_delay=no_delay
+            speed=speed,
+            words_per_sec=words_per_sec,
+            human_words_per_sec=human_words_per_sec,
+            max_gap_s=max_gap,
+            no_delay=no_delay,
         ),
     )
 

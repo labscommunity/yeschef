@@ -63,10 +63,13 @@ def test_save_and_replay_round_trip(tmp_path) -> None:
     replay(loaded, console, ReplayOptions(no_delay=True))
     output = console.export_text()
 
-    # Header names the machines and models — the "this is real and local" proof.
-    assert "fastball · ollama/qwen3:8b @ office-mac" in output
-    assert "closer · vllm/qwen3-32b @ gpu-box" in output
-    assert "goal: pick a cache" in output
+    # The roster names the machines and models — the "this is real and local" proof.
+    assert "ollama/qwen3:8b" in output
+    assert "office-mac" in output
+    assert "vllm/qwen3-32b" in output
+    assert "gpu-box" in output
+    # Every turn is attributed, and the operator's turn is badged distinctly.
+    assert "fastball" in output and "closer" in output
     assert "settle this: which cache?" in output
     assert "write-through is simpler" in output
     assert "dialogue complete · 3 turns" in output
@@ -83,7 +86,7 @@ def test_replay_marks_the_bounded_ending(tmp_path) -> None:
 
     console = Console(record=True, width=100)
     replay(payload, console, ReplayOptions(no_delay=True))
-    assert "ended by stop_phrase" in console.export_text()
+    assert "ended by stop phrase" in console.export_text()
 
 
 def test_lifetime_stats_come_from_the_durable_record() -> None:
@@ -102,3 +105,49 @@ def test_lifetime_stats_come_from_the_durable_record() -> None:
         assert "1 tasks" in line and "your hardware" in line
     finally:
         store.close()
+
+
+def test_operator_turns_are_visually_distinct_from_model_turns(tmp_path) -> None:
+    """A viewer must be able to tell a human interjection from a model reply."""
+    store = Store(":memory:", EventBus())
+    try:
+        room, messages, agents = build_room(store)
+        payload = transcript_payload(room, messages, agents)
+    finally:
+        store.close()
+
+    console = Console(record=True, width=100, force_terminal=True, color_system="truecolor")
+    replay(payload, console, ReplayOptions(no_delay=True))
+    ansi = console.export_text(styles=True, clear=False)
+    plain = console.export_text()
+
+    # The operator gets a reverse-video badge (bold black on bright white); models never do.
+    badge = next((line for line in ansi.splitlines() if "\x1b[1;30;107m" in line), None)
+    assert badge is not None, f"no operator badge found in:\n{ansi}"
+    assert "me" in badge
+
+    # Agent turns carry their model on the label line, so identity is never ambiguous.
+    assert "ollama/qwen3:8b" in plain
+    assert "vllm/qwen3-32b" in plain
+
+
+def test_the_header_shows_the_command_that_produced_the_dialogue() -> None:
+    store = Store(":memory:", EventBus())
+    try:
+        store.register_agent("ace", node="gpu-box", backend="ollama/qwen2.5:7b")
+        store.register_agent("scout", node="gpu-box", backend="ollama/llama3.2:3b")
+        store.ensure_identity("operator:me", AgentKind.CLAUDE)
+        room = store.create_room(
+            "dialogue: pick a cache eviction policy", "operator:me", ["ace", "scout"]
+        )
+        payload = transcript_payload(
+            store.require_room(room.id).to_dict(), [], [a.to_dict() for a in store.list_agents()]
+        )
+    finally:
+        store.close()
+
+    console = Console(record=True, width=100)
+    replay(payload, console, ReplayOptions(no_delay=True))
+    output = console.export_text()
+    assert "farmteam dialogue ace scout" in output
+    assert "pick a cache eviction policy" in output
