@@ -368,12 +368,18 @@ class Task:
             "assignee": self.assignee,
             "created_by": self.created_by,
             "project": self.project,
+            "priority": self.priority or None,
             "room_id": self.room_id,
             "progress": {"pct": self.progress_pct, "message": self.progress_msg},
             "error": self.error,
             "attempts": self.attempts,
             "created_at": self.created_at,
             "finished_at": self.finished_at,
+            "input_expires_at": (
+                round((self.claimed_at or self.created_at) + INPUT_REQUIRED_TTL_S, 1)
+                if str(self.state) == "input_required"
+                else None
+            ),
             "flags": [
                 k
                 for k in (

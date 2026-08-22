@@ -552,11 +552,15 @@ class Store:
                     ts,
                 ),
             )
+            # max_messages bounds AGENT chatter; the operator steering a room is the
+            # safety valve and must not burn its budget by speaking.
+            counted = 0 if sender.startswith(("claude:", "operator:")) else 1
             self._db.execute(
-                """UPDATE rooms SET next_seq = next_seq + 1, message_count = message_count + 1,
+                """UPDATE rooms SET next_seq = next_seq + 1,
+                                    message_count = message_count + ?,
                                     total_tokens = total_tokens + ?, last_activity = ?
                    WHERE id = ?""",
-                (cost, ts, room_id),
+                (counted, cost, ts, room_id),
             )
             self._db.commit()
             row = self._db.execute("SELECT * FROM messages WHERE id = ?", (mid,)).fetchone()
@@ -588,8 +592,22 @@ class Store:
         # writes it — in the seed goal ("say X when you agree") or mid-conversation — is
         # setting the rule, not ending the room; archive_room is the deliberate exit.
         if policy.stop_phrase and policy.stop_phrase in body and not from_operator:
-            self.archive_room(room_id, "stop_phrase")
-        elif policy.max_messages is not None and row["message_count"] >= policy.max_messages:
+            # Floor: small models emit the terminator on turn ONE, archiving the room
+            # before anyone else has spoken and locking the operator out. Honor the
+            # phrase only once every worker participant has taken a turn.
+            worker_members = [m for m in room.members if not m.startswith(("claude:", "operator:"))]
+            with self._lock:
+                spoken = {
+                    r["sender"]
+                    for r in self._db.execute(
+                        "SELECT DISTINCT sender FROM messages WHERE room_id = ?",
+                        (room_id,),
+                    ).fetchall()
+                }
+            if all(m in spoken for m in worker_members):
+                self.archive_room(room_id, "stop_phrase")
+            return
+        if policy.max_messages is not None and row["message_count"] >= policy.max_messages:
             self.archive_room(room_id, "max_messages")
         elif policy.max_total_tokens is not None and row["total_tokens"] >= policy.max_total_tokens:
             self.archive_room(room_id, "max_total_tokens")
@@ -844,6 +862,33 @@ class Store:
         if holder:
             self.bus.publish(holder, EventKind.TASK_CANCELLED, {"task_id": task_id, "by": by})
         return finished
+
+    def reassign_task(self, task_id: str, assignee: str, by: str) -> Task:
+        """Requeue a live task onto a different worker, preserving id and history."""
+        task = self.require_task(task_id)
+        holder = task.assignee
+        with self._lock:
+            self._db.execute(
+                """UPDATE tasks SET assignee = ?, state = ?, claimed_at = NULL,
+                                    progress_pct = NULL, progress_msg = ?
+                   WHERE id = ? AND state NOT IN (?, ?, ?)""",
+                (
+                    assignee,
+                    str(TaskState.QUEUED),
+                    f"reassigned from {holder} by {by}",
+                    task_id,
+                    str(TaskState.COMPLETED),
+                    str(TaskState.FAILED),
+                    str(TaskState.CANCELLED),
+                ),
+            )
+            self._db.commit()
+        if holder and holder != assignee:
+            self.bus.publish(holder, EventKind.TASK_CANCELLED, {"task_id": task_id, "by": by})
+        self._log_task(task_id, "reassigned", {"from": holder, "to": assignee, "by": by})
+        fresh = self.require_task(task_id)
+        self._announce_task(fresh)
+        return fresh
 
     def request_input(self, task_id: str, agent: str, question: str) -> Task:
         """Agent needs a human/Claude answer: opens the task room and parks the task."""

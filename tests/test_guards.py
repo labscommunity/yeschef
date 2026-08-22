@@ -323,6 +323,7 @@ def test_the_goal_seed_may_name_the_stop_phrase_without_triggering_it(fleet: Sto
     )
     assert not fleet.require_room(room.id).archived
 
+    fleet.post_message(room.id, "beta", "counterpoint first")
     fleet.post_message(room.id, "alpha", "fine — AGREED")
     assert fleet.require_room(room.id).archived_reason == "stop_phrase"
 
@@ -386,7 +387,10 @@ def test_only_agents_can_trigger_the_stop_phrase(fleet: Store) -> None:
     fleet.post_message(room.id, "claude:main", "still going? say AGREED when you settle it")
     assert not fleet.require_room(room.id).archived
 
+    # floor: one agent converging alone is not convergence
     fleet.post_message(room.id, "alpha", "fine — AGREED")
+    assert not fleet.require_room(room.id).archived
+    fleet.post_message(room.id, "beta", "AGREED as well")
     assert fleet.require_room(room.id).archived_reason == "stop_phrase"
 
 

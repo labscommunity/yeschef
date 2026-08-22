@@ -368,7 +368,7 @@ async def test_two_local_agents_converse_autonomously(fleet) -> None:
             {
                 "participants": ["alpha", "beta"],
                 "goal": "decide on a caching strategy",
-                "max_messages": 7,
+                "max_messages": 6,  # agent turns only — the seed no longer counts
             },
         )
         room_id = started.data["room_id"]

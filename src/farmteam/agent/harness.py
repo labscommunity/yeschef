@@ -229,10 +229,14 @@ class Harness:
                 f"You are in a conversation titled '{room['topic']}' with: "
                 f"{', '.join(m for m in room['members'] if m != self.config.name)}. "
                 "Messages from others are prefixed with their name. Reply as yourself only — "
-                "never write another participant's turn."
+                "never write another participant's turn. This is a CONVERSATION: your "
+                "reply text is the entire deliverable. Do not create files, do not "
+                "narrate tool use, do not treat the topic as a build task."
             )
             try:
-                result, _ = await self._run_model(system, turns)
+                # Conversation mode: no tool specs. A coder-tier model with tools in
+                # scope keeps falling out of debates into its file-task persona.
+                result, _ = await self._run_model(system, turns, text_only=True)
                 body = (result.text or "").strip()
             except Exception:
                 log.exception("model call failed in room %s", room_id)

@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import re
 
 from fastmcp import FastMCP
 
@@ -217,11 +218,14 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
         """Post into a room. Use @name to address a specific participant.
 
         In a round-robin room this interjects out of turn and re-anchors the conversation
-        on the next agent in the ring.
+        on the next agent in the ring. The ack's prior_seq is the message immediately
+        before yours: if it is higher than the last seq you READ, messages landed in
+        between — resume wait_room from the last seq you READ, never from your own
+        post's seq, or you will silently skip them.
         """
         me = ident.current()
         posted = store.post_message(room, me, message, data=data, reply_to=reply_to)
-        return {"message": posted.to_dict()}
+        return {"message": posted.to_dict(), "prior_seq": posted.seq - 1}
 
     @mcp.tool
     @_guard
@@ -332,24 +336,26 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
         """
         target = store.require_room(room)
         deadline = asyncio.get_running_loop().time() + min(wait_s, MAX_LONG_POLL_S)
+        messages = store.fetch_messages(room, after_seq=from_seq, limit=100)
         while asyncio.get_running_loop().time() < deadline:
             messages = store.fetch_messages(room, after_seq=from_seq, limit=100)
             target = store.require_room(room)
+            # `until` decides when the long-poll UNBLOCKS — it never withholds
+            # delivery: an "archived" wait that hits the cap still hands back
+            # everything accumulated so far. Suppressing them convinced sessions
+            # that live rooms were stalled.
             if (messages and until != "archived") or target.archived:
-                return {
-                    "room": target.to_dict(),
-                    "messages": [m.to_dict() for m in messages],
-                    "next_seq": messages[-1].seq if messages else from_seq,
-                    "archived": target.archived,
-                }
+                break
             await asyncio.sleep(2.0)
-        return {
+        reply = {
             "room": target.to_dict(),
-            "messages": [],
-            "next_seq": from_seq,
+            "messages": [m.to_dict() for m in messages],
+            "next_seq": messages[-1].seq if messages else from_seq,
             "archived": target.archived,
-            "wait_more": True,
         }
+        if not target.archived and (until == "archived" or not messages):
+            reply["wait_more"] = True
+        return reply
 
     @mcp.tool
     @_guard
@@ -379,6 +385,19 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
         alone. Steer by posting into the room; stop with archive_room.
         """
         me = ident.current()
+        liveness = {}
+        for name in participants:
+            with contextlib.suppress(HubError):
+                liveness[name] = str(store.require_agent(name).status())
+        offline = [n for n, st in liveness.items() if st == "offline"]
+        if offline:
+            raise HubError(
+                ErrorCode.CONFLICT,
+                f"participant(s) offline: {', '.join(offline)} — a round-robin room "
+                "with a dead member produces silent dead air. Bring them back "
+                "(farmteam doctor on their node) or start without them.",
+                409,
+            )
         if not participants:
             raise HubError(ErrorCode.INVALID, "need at least one participant")
         for name in participants:
@@ -476,6 +495,16 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
                 ),
                 None,
             )
+            tools_tag = next((t for t in agent.tags if t.startswith("tools:")), "")
+            if "shell" not in tools_tag and re.search(
+                r"\b(run|execute|pytest|npm test|compile)\b", spec[:2000], re.I
+            ):
+                routed_note = (
+                    (routed_note + " · " if routed_note else "")
+                    + f"spec asks for execution but {assignee} has no shell tool "
+                    f"({tools_tag or 'no tools'}) — it cannot run anything; expect "
+                    "unexecuted-verification claims or an input_required stall"
+                )
             if ceiling and len(spec) > ceiling * 3:
                 routed_note = (
                     (routed_note + " · " if routed_note else "")
@@ -620,13 +649,54 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
 
     @mcp.tool
     @_guard
+    def reassign_task(task_id: str, assignee: str, force: bool = False) -> dict:
+        """Move a task to another worker WITHOUT severing its identity or lineage.
+
+        Queued tasks move freely; claimed/working tasks need force=true (the current
+        worker is told to stop and the task requeues to the new assignee, attempts
+        preserved). Replaces the cancel+resubmit dance that produced two unrelated
+        records.
+        """
+        task = store.require_task(task_id)
+        if task.state.terminal:
+            raise HubError(ErrorCode.CONFLICT, f"task already {task.state} — use revise_task", 409)
+        store.require_agent(assignee)
+        if task.state.active and not force:
+            raise HubError(
+                ErrorCode.CONFLICT,
+                f"task is {task.state} on {task.assignee} — pass force=true to pull "
+                "it back and requeue on the new worker",
+                409,
+            )
+        moved = store.reassign_task(task_id, assignee, by=ident.current())
+        return {"task": moved.to_summary(), "moved_from": task.assignee}
+
+    @mcp.tool
+    @_guard
+    def cancel_all(project: str | None = None, force: bool = False) -> dict:
+        """Emergency stop: cancel every queued/claimed/working task in one call.
+
+        force=true includes actively-working tasks. Returns the per-task terminal
+        receipt table — the accurate final-state report comes free.
+        """
+        receipts = []
+        for t in store.list_tasks(project=project, limit=500):
+            if not t.state.terminal and (force or str(t.state) != "working"):
+                with contextlib.suppress(HubError):
+                    finished = store.cancel_task(t.id, ident.current(), privileged=True)
+                    receipts.append(finished.to_summary())
+        return {"cancelled": len(receipts), "tasks": receipts}
+
+    @mcp.tool
+    @_guard
     def revise_task(
         task_id: str,
         feedback: str,
         assignee: str | None = None,
         output_mode: str | None = None,
     ) -> dict:
-        """Send a completed/failed task back for another round WITH its history.
+        """THE correction path: send a completed-but-wrong or failed task back for
+        another round WITH its history — preserves lineage; a fresh submit severs it.
 
         Creates a follow-up task whose spec carries the original spec, the prior
         attempt's output, and your feedback — so the worker sees what it did and what

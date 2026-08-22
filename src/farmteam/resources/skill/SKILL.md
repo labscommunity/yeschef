@@ -133,6 +133,17 @@ config files.
   replies route to you.
 - **Report honestly.** If a task `failed`, say so and show the error; do not pretend a
   local agent's output is your own careful work.
+- **Watcher BEFORE the first wait.** On any coder-tier dispatch, spawn the
+  farmteam-watcher before you would call wait_task at all; a second inline wait_task
+  on the same task means you have already broken this rule. Checking several tasks?
+  One `list_tasks(project=...)`, not repeated task_status.
+- **Dialogue mechanics.** Pair any "final message must start with X" instruction with
+  `stop_phrase=X` so the room archives on convergence instead of burning its budget
+  on restatements. When you hand-drive a debate over DMs, decision artifacts must
+  distinguish moderator-supplied arguments from worker-originated ones. To move a
+  live task between workers use `reassign_task` (lineage survives); to stop a
+  fan-out, `cancel_all(project=..., force=True)` returns the terminal table in one
+  call. If a worker is dead, tell the user to run `farmteam doctor` on its node.
 - **A started dialogue is owned work.** After start_dialogue, follow it with
   `wait_room` or hand the room id to the farmteam-watcher (room mode) — never end
   your turn "waiting for turns to accumulate": that abandons the debate and the user

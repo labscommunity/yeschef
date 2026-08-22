@@ -1059,3 +1059,139 @@ async def test_revise_inherits_output_mode() -> None:
                 await claude.call_tool("revise_task", {"task_id": t.id, "feedback": "v2 please"})
             ).data
             assert hub.store.require_task(revised["task_id"]).output_mode == "text"
+
+
+# ------------------------------------------------------------- cycle 8 locks
+
+
+async def test_wait_room_never_withholds_messages() -> None:
+    """until='archived' hitting the cap still delivers accumulated messages."""
+    async with live_hub() as hub:
+        mcp = build_mcp(hub.store, HubConfig(db_path=":memory:", default_identity="claude:test"))
+        async with Client(mcp) as claude:
+            hub.store.register_agent("talky", kind="worker", node="n", backend="b", tags=[])
+            room = hub.store.create_room("d", "claude:test", participants=["talky"])
+            hub.store.post_message(room.id, "talky", "turn one")
+            got = (
+                await claude.call_tool(
+                    "wait_room",
+                    {"room": room.id, "from_seq": 0, "wait_s": 1, "until": "archived"},
+                )
+            ).data
+            assert [m["body"] for m in got["messages"]] == ["turn one"]
+            assert got["wait_more"] is True  # room still open
+
+
+async def test_stop_phrase_needs_every_worker_to_have_spoken() -> None:
+    from farmteam.models import RoomPolicy
+
+    async with live_hub() as hub:
+        hub.store.register_agent("w1", kind="worker", node="n", backend="b", tags=[])
+        hub.store.register_agent("w2", kind="worker", node="n", backend="b", tags=[])
+        room = hub.store.create_room(
+            "debate",
+            "claude:test",
+            participants=["w1", "w2"],
+            policy=RoomPolicy(stop_phrase="VERDICT:"),
+        )
+        # w1 fires the terminator on turn ONE — w2 has not spoken; room must survive
+        hub.store.post_message(room.id, "w1", "VERDICT: use httpx")
+        assert hub.store.require_room(room.id).archived is False
+        hub.store.post_message(room.id, "w2", "I disagree, requests is fine")
+        hub.store.post_message(room.id, "w1", "VERDICT: httpx, final")
+        assert hub.store.require_room(room.id).archived is True
+
+
+async def test_operator_posts_do_not_burn_room_budget() -> None:
+    from farmteam.models import RoomPolicy
+
+    async with live_hub() as hub:
+        hub.store.register_agent("w3", kind="worker", node="n", backend="b", tags=[])
+        room = hub.store.create_room(
+            "d",
+            "claude:test",
+            participants=["w3"],
+            policy=RoomPolicy(max_messages=2),
+        )
+        hub.store.post_message(room.id, "claude:test", "seed")
+        hub.store.post_message(room.id, "claude:test", "steering interjection")
+        assert hub.store.require_room(room.id).archived is False  # 0 worker messages
+        hub.store.post_message(room.id, "w3", "turn 1")
+        hub.store.post_message(room.id, "w3", "turn 2")
+        assert hub.store.require_room(room.id).archived is True  # 2 worker messages
+
+
+async def test_start_dialogue_refuses_dead_participants() -> None:
+    async with live_hub() as hub:
+        mcp = build_mcp(hub.store, HubConfig(db_path=":memory:", default_identity="claude:test"))
+        async with Client(mcp) as claude:
+            hub.store.register_agent("alive", kind="worker", node="n", backend="b", tags=[])
+            hub.store.register_agent("corpse", kind="worker", node="n", backend="b", tags=[])
+            hub.store._db.execute(
+                "UPDATE agents SET last_seen = last_seen - 3600 WHERE name = 'corpse'"
+            )
+            hub.store._db.commit()
+            err = (
+                await claude.call_tool(
+                    "start_dialogue",
+                    {"participants": ["alive", "corpse"], "goal": "debate something"},
+                )
+            ).data
+            assert err["error"]["code"] == "conflict"
+            assert "corpse" in err["error"]["message"]
+
+
+async def test_reassign_preserves_identity_and_lineage() -> None:
+    async with live_hub() as hub:
+        mcp = build_mcp(hub.store, HubConfig(db_path=":memory:", default_identity="claude:test"))
+        async with Client(mcp) as claude:
+            hub.store.register_agent("wa", kind="worker", node="n", backend="b", tags=[])
+            hub.store.register_agent("wb", kind="worker", node="n", backend="b", tags=[])
+            t = hub.store.submit_task(
+                title="t", spec="glossary please", created_by="c", assignee="wa"
+            )
+            moved = (
+                await claude.call_tool("reassign_task", {"task_id": t.id, "assignee": "wb"})
+            ).data
+            assert moved["task"]["id"] == t.id
+            assert moved["task"]["assignee"] == "wb"
+            assert moved["moved_from"] == "wa"
+            # working task without force → guarded
+            hub.store.claim_task(t.id, "wb")
+            hub.store._db.execute("UPDATE tasks SET state='working' WHERE id = ?", (t.id,))
+            hub.store._db.commit()
+            err = (
+                await claude.call_tool("reassign_task", {"task_id": t.id, "assignee": "wa"})
+            ).data
+            assert err["error"]["code"] == "conflict"
+
+
+async def test_cancel_all_returns_receipt_table() -> None:
+    async with live_hub() as hub:
+        mcp = build_mcp(hub.store, HubConfig(db_path=":memory:", default_identity="claude:test"))
+        async with Client(mcp) as claude:
+            hub.store.register_agent("wf", kind="worker", node="n", backend="b", tags=[])
+            for n in range(3):
+                hub.store.submit_task(
+                    title=f"t{n}",
+                    spec="fan out work",
+                    created_by="c",
+                    assignee="wf",
+                    project="stopme",
+                )
+            got = (await claude.call_tool("cancel_all", {"project": "stopme"})).data
+            assert got["cancelled"] == 3
+            assert all(t["state"] == "cancelled" for t in got["tasks"])
+
+
+async def test_priority_visible_and_ordering_real() -> None:
+    async with live_hub() as hub:
+        hub.store.register_agent("wp", kind="worker", node="n", backend="b", tags=[])
+        low = hub.store.submit_task(title="low", spec="later please", created_by="c", assignee="wp")
+        high = hub.store.submit_task(
+            title="high", spec="urgent thing", created_by="c", assignee="wp", priority=10
+        )
+        assert high.to_summary()["priority"] == 10
+        nxt = hub.store.next_task_for("wp")
+        assert nxt.id == high.id  # priority actually orders the claim path
+        assert low.to_summary()["priority"] is None
