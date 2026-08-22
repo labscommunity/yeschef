@@ -415,13 +415,17 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
         timeout_s: float = 3600.0,
         dedupe_key: str | None = None,
         project: str | None = None,
+        output_mode: str | None = None,
     ) -> dict:
         """Dispatch a background task to a local agent and return its id immediately.
 
         Target one agent by name with `assignee`, or any agent carrying a tag with
         `selector` (e.g. "tier:reasoning") — the first idle match claims it. The worker
         runs on another machine and CANNOT read this project's files: everything it
-        needs must be in the spec. Pass `project` (this project's directory name) so a
+        needs must be in the spec. output_mode="text" runs the task with NO tool
+        calling — the worker answers in prose/fenced code and the harness extracts a
+        lone code block as the artifact; use it for workers whose tool emission is
+        unreliable. Pass `project` (this project's directory name) so a
         later session can find this project's tasks with list_tasks(project=...) instead
         of guessing by title. Wait with wait_task(task_id) or check later with
         task_status(task_id) from any session.
@@ -489,6 +493,7 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
             timeout_s=timeout_s,
             dedupe_key=dedupe_key,
             project=project,
+            output_mode=output_mode,
         )
         ack = {"task_id": task.id, "task": task.to_summary()}
         if routed_note:
@@ -615,7 +620,12 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
 
     @mcp.tool
     @_guard
-    def revise_task(task_id: str, feedback: str, assignee: str | None = None) -> dict:
+    def revise_task(
+        task_id: str,
+        feedback: str,
+        assignee: str | None = None,
+        output_mode: str | None = None,
+    ) -> dict:
         """Send a completed/failed task back for another round WITH its history.
 
         Creates a follow-up task whose spec carries the original spec, the prior
@@ -640,6 +650,7 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
             assignee=assignee or prior.assignee,
             selector=None if (assignee or prior.assignee) else prior.selector,
             project=prior.project,
+            output_mode=output_mode or prior.output_mode,
         )
         store._log_task(prior.id, "revised_as", {"task_id": task.id})
         return {"task_id": task.id, "task": task.to_summary(), "revises": prior.id}

@@ -120,6 +120,10 @@ MAX_ARTIFACT_BYTES = 32 * 1024 * 1024
 
 DEFAULT_TASK_TIMEOUT_S = 3600.0
 
+INPUT_REQUIRED_TTL_S = 30 * 60.0
+"""A parked question fails the task after this long — stranded input_required tasks
+sat for 41 minutes with nobody notified before this existed."""
+
 DEFAULT_MAX_ROOM_MESSAGES = 200
 """Backstop applied to any room created without a message cap.
 
@@ -313,6 +317,7 @@ class Task:
     timeout_s: float = DEFAULT_TASK_TIMEOUT_S
     dedupe_key: str | None = None
     project: str | None = None
+    output_mode: str | None = None
     room_id: str | None = None
     progress_pct: float | None = None
     progress_msg: str | None = None
@@ -333,6 +338,7 @@ class Task:
             "assignee": self.assignee,
             "selector": self.selector,
             "project": self.project,
+            "output_mode": self.output_mode,
             "priority": self.priority,
             "timeout_s": self.timeout_s,
             "room_id": self.room_id,
@@ -368,6 +374,21 @@ class Task:
             "attempts": self.attempts,
             "created_at": self.created_at,
             "finished_at": self.finished_at,
+            "flags": [
+                k
+                for k in (
+                    "truncated",
+                    "no_output",
+                    "all_tools_failed",
+                    "code_in_text_only",
+                    "unverified_claims",
+                    "tool_text_unparsed",
+                    "echoes_spec",
+                    "partial",
+                )
+                if (self.result or {}).get(k)
+            ]
+            or None,
             "age_s": round(now() - self.created_at, 1) if self.created_at else None,
             "ran_s": (
                 round(self.finished_at - self.claimed_at, 1)

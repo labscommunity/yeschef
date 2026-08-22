@@ -306,7 +306,13 @@ class Harness:
                 "proceed without a decision the spec does not answer, say exactly "
                 "NEED_INPUT: followed by your question."
             )
-            if workspace is not None:
+            if task.get("output_mode") == "text":
+                system += (
+                    "\n\nAnswer in plain text. If the task produces a file, put its "
+                    "complete content in ONE fenced code block — it will be captured "
+                    "as the deliverable. Do not attempt tool calls."
+                )
+            elif workspace is not None:
                 system += (
                     f"\n\nYour workspace directory is {workspace} — work inside it; "
                     "paths outside it (and ~ expansion) are rejected by your tools. "
@@ -317,7 +323,12 @@ class Harness:
 
             for round_index in range(4):
                 self._drain_task_context(task_id, turns)
-                result, tool_rounds = await self._run_model(system, turns, task_id=task_id)
+                result, tool_rounds = await self._run_model(
+                    system,
+                    turns,
+                    task_id=task_id,
+                    text_only=task.get("output_mode") == "text",
+                )
                 text = (result.text or "").strip()
 
                 if (
@@ -383,7 +394,8 @@ class Harness:
                         "this attempt emitted tool-call-like text that could not be "
                         "parsed into any granted tool in two generation rounds — "
                         "nothing was executed and no salvageable code block was "
-                        "found. Retry with a simpler text-only spec, or check whether "
+                        "found. Retry with output_mode='text' (prose + fenced code, "
+                        "auto-extracted), or check whether "
                         f"{self.backend.model} handles tool calling reliably.",
                         result={
                             "tokens": result.total_tokens,
@@ -691,14 +703,20 @@ class Harness:
         root = str(self._task_workspace(task_id) or self.tools.root or "~/agent-scratch")
         return ToolExecutor(dc_replace(self.config.tools, file_root=root))
 
-    async def _run_model(self, system: str, turns: list[Turn], task_id: str | None = None):
+    async def _run_model(
+        self,
+        system: str,
+        turns: list[Turn],
+        task_id: str | None = None,
+        text_only: bool = False,
+    ):
         """One model call, plus the tool loop if this agent has tools enabled.
 
         Returns (result, tool_rounds) — the count matters because a reply that merely
         *describes* tool calls is only suspicious when no tool actually ran.
         """
         executor = self._task_tools(task_id)
-        specs = executor.specs() if executor.enabled else None
+        specs = executor.specs() if executor.enabled and not text_only else None
         allowed = {s["name"] for s in specs} if specs else set()
         result = await self.backend.chat(
             system,

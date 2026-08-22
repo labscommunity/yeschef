@@ -162,7 +162,15 @@ config files.
   crashed or rate-limited session may have finished work waiting; offer to land it
   before re-dispatching anything from scratch. Corrections go through
   `revise_task(id, feedback)` — for FAILED rounds and for fixing a COMPLETED task's
-  output alike; a fresh submit severs the lineage and the worker's context.
+  output alike; a fresh submit severs the lineage and the worker's context. Cap revise
+  loops at TWO rounds for small-context workers: a round that REGRESSES means the
+  worker is diverging — respec smaller, switch to `output_mode="text"`, or finish
+  locally and say so. If tool emission fails (`tool_text_unparsed`, parse errors), go
+  straight to `output_mode="text"` on the next dispatch.
+- **Check `flags` on every terminal summary.** wait_task/task_status summaries carry a
+  `flags` list (`truncated`, `no_output`, `echoes_spec`, `unverified_claims`, …) — a
+  `completed` state with flags is not a clean completion; read the result before
+  celebrating.
 - **Worker claims are claims.** `tool_log` in the result shows what actually ran; a
   worker that says "tests pass" with no shell in its log ran nothing. Check
   `code_in_text_only` and `truncated` flags before landing anything.

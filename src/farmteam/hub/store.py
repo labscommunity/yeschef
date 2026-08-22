@@ -17,6 +17,7 @@ from pathlib import Path
 from ..models import (
     DEFAULT_TASK_TIMEOUT_S,
     HEARTBEAT_TTL_S,
+    INPUT_REQUIRED_TTL_S,
     MAX_ARTIFACT_BYTES,
     Agent,
     AgentKind,
@@ -74,6 +75,9 @@ class Store:
             self._db.commit()
         with _ctx.suppress(_sqlite3.OperationalError):
             self._db.execute("ALTER TABLE artifacts ADD COLUMN fetched_at REAL")
+            self._db.commit()
+        with _ctx.suppress(_sqlite3.OperationalError):
+            self._db.execute("ALTER TABLE tasks ADD COLUMN output_mode TEXT")
             self._db.commit()
         self._db.commit()
 
@@ -672,6 +676,7 @@ class Store:
         timeout_s: float = DEFAULT_TASK_TIMEOUT_S,
         dedupe_key: str | None = None,
         project: str | None = None,
+        output_mode: str | None = None,
     ) -> Task:
         if not assignee and not selector:
             raise HubError(ErrorCode.INVALID, "assignee or selector required")
@@ -701,8 +706,9 @@ class Store:
         with self._lock:
             self._db.execute(
                 """INSERT INTO tasks (id, title, spec, created_by, state, assignee, selector,
-                                      priority, timeout_s, dedupe_key, project, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                      priority, timeout_s, dedupe_key, project,
+                                      output_mode, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     tid,
                     title,
@@ -715,6 +721,7 @@ class Store:
                     timeout_s,
                     dedupe_key,
                     project,
+                    output_mode,
                     ts,
                 ),
             )
@@ -1082,6 +1089,7 @@ class Store:
             timeout_s=row["timeout_s"],
             dedupe_key=row["dedupe_key"],
             project=row["project"] if "project" in row.keys() else None,
+            output_mode=row["output_mode"] if "output_mode" in row.keys() else None,
             room_id=row["room_id"],
             progress_pct=row["progress_pct"],
             progress_msg=row["progress_msg"],
@@ -1132,9 +1140,7 @@ class Store:
         """Fetching a result counts as collecting it — the requester has seen the
         work; its files stay fetchable but stop reading as orphaned."""
         ids = [
-            f["artifact_id"]
-            for f in (task.result or {}).get("files") or []
-            if "artifact_id" in f
+            f["artifact_id"] for f in (task.result or {}).get("files") or [] if "artifact_id" in f
         ]
         if not ids:
             return
@@ -1321,7 +1327,27 @@ class Store:
                     stats["timed_out"] += 1
                 continue
             if task.state in (TaskState.QUEUED, TaskState.INPUT_REQUIRED):
-                # Queued waits on an agent to appear; input_required waits on a human.
+                # Queued waits on an agent to appear; input_required waits on a human —
+                # but not forever: a stranded question failed one task for 41 minutes
+                # before anyone noticed. Fail with the question in the error so the
+                # requester sees WHAT was asked, not just that time passed.
+                if (
+                    task.state is TaskState.INPUT_REQUIRED
+                    and ref - (task.claimed_at or task.created_at) > INPUT_REQUIRED_TTL_S
+                ):
+                    question = (task.progress_msg or "").removeprefix("awaiting input: ")
+                    with contextlib.suppress(HubError):
+                        self._finish(
+                            task.id,
+                            TaskState.FAILED,
+                            error=(
+                                "no input arrived within "
+                                f"{int(INPUT_REQUIRED_TTL_S / 60)}m; the worker was "
+                                f"asking: {question[:300]}"
+                            ),
+                        )
+                        stats["timed_out"] += 1
+                    continue
                 if task.state is TaskState.QUEUED:
                     self._announce_task(task)
                 continue

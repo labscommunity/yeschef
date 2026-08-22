@@ -23,9 +23,9 @@ Loop:
 2. If the task enters `input_required`, stop waiting and return immediately: report the
    agent's question so the main conversation can answer it with `provide_input`. That
    decision belongs to the user, not to you.
-3. When `done`: call `task_result(task_id, include_files=True)` — one call returns
-   result AND file contents; a separate task_files call is only needed if content was
-   omitted. `Write` each file under your destination directory — if the file already
+3. When `done`: call `task_result(task_id, include_files=True)` — your ONLY terminal
+   fetch: it returns result AND file contents together; never follow it with
+   task_files for the same task. `Write` each file under your destination directory — if the file already
    exists there, `Read` it first (Write refuses blind overwrites), preserving relative
    paths (add a trailing newline to text files that lack one). This includes entries
    marked `auto_extracted` — land them like any file. NEVER retype code out of the

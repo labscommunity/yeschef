@@ -955,3 +955,107 @@ def test_extraction_prefers_spec_named_file() -> None:
         spec_hint="Write validate.py with two functions and doctests.",
     )
     assert got == ("validate.py", "x = 1\n")
+
+
+# ------------------------------------------------------------- cycle 7 locks
+
+
+async def test_flags_ride_in_summaries() -> None:
+    async with live_hub() as hub:
+        mcp = build_mcp(hub.store, HubConfig(db_path=":memory:", default_identity="claude:test"))
+        async with Client(mcp) as claude:
+            hub.store.register_agent("flagger", kind="worker", node="n", backend="b", tags=[])
+            t = hub.store.submit_task(
+                title="t", spec="do the thing please", created_by="c", assignee="flagger"
+            )
+            hub.store.claim_task(t.id, "flagger")
+            hub.store.complete_task(
+                t.id, "flagger", {"text": "done", "truncated": True, "no_output": True}
+            )
+            waited = (await claude.call_tool("wait_task", {"task_id": t.id, "wait_s": 1})).data
+            assert set(waited["task"]["flags"]) == {"truncated", "no_output"}
+
+
+async def test_input_required_ttl_fails_with_the_question() -> None:
+    from farmteam.models import INPUT_REQUIRED_TTL_S
+
+    async with live_hub() as hub:
+        hub.store.register_agent("stuck", kind="worker", node="n", backend="b", tags=[])
+        t = hub.store.submit_task(
+            title="t", spec="build the widget", created_by="c", assignee="stuck"
+        )
+        hub.store.claim_task(t.id, "stuck")
+        hub.store.request_input(t.id, "stuck", "may I proceed?")
+        # age the park beyond the TTL
+        hub.store._db.execute(
+            "UPDATE tasks SET claimed_at = claimed_at - ? WHERE id = ?",
+            (INPUT_REQUIRED_TTL_S + 60, t.id),
+        )
+        hub.store._db.commit()
+        hub.store.sweep()
+        task = hub.store.require_task(t.id)
+        assert str(task.state) == "failed"
+        assert "may I proceed?" in task.error
+
+
+async def test_output_mode_text_disables_tools_and_extracts(tmp_path) -> None:
+    def respond(system, turns):
+        assert "Do not attempt tool calls" in system
+        return "Here is `thing.py`:\n```python\nDONE = 1\n```"
+
+    async with live_hub() as hub:
+        mcp = build_mcp(hub.store, HubConfig(db_path=":memory:", default_identity="claude:test"))
+        async with Client(mcp) as claude:
+            config = AgentConfig(
+                name="texty2",
+                hub=hub.url,
+                backend={"type": "cli", "command": ["true"], "model": "m"},
+                tools=ToolsConfig(
+                    allow=["file_write", "file_read"], file_root=str(tmp_path / "scratch")
+                ),
+            )
+            harness = Harness(config, backend=MockBackend(respond))
+            runner = asyncio.create_task(harness.run())
+            await wait_for(lambda: hub.store.bus.subscriber_count("texty2"))
+            try:
+                ack = (
+                    await claude.call_tool(
+                        "submit_task",
+                        {
+                            "title": "t",
+                            "spec": "write thing.py",
+                            "assignee": "texty2",
+                            "output_mode": "text",
+                        },
+                    )
+                ).data
+                await wait_for(lambda: hub.store.require_task(ack["task_id"]).state.terminal)
+                task = hub.store.require_task(ack["task_id"])
+                assert str(task.state) == "completed"
+                assert task.result["files"][0]["path"] == "thing.py"
+                assert task.result["files"][0]["auto_extracted"] is True
+            finally:
+                runner.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await runner
+                await harness.aclose()
+
+
+async def test_revise_inherits_output_mode() -> None:
+    async with live_hub() as hub:
+        mcp = build_mcp(hub.store, HubConfig(db_path=":memory:", default_identity="claude:test"))
+        async with Client(mcp) as claude:
+            hub.store.register_agent("modal", kind="worker", node="n", backend="b", tags=[])
+            t = hub.store.submit_task(
+                title="t",
+                spec="write it in text mode",
+                created_by="c",
+                assignee="modal",
+                output_mode="text",
+            )
+            hub.store.claim_task(t.id, "modal")
+            hub.store.complete_task(t.id, "modal", {"text": "v1"})
+            revised = (
+                await claude.call_tool("revise_task", {"task_id": t.id, "feedback": "v2 please"})
+            ).data
+            assert hub.store.require_task(revised["task_id"]).output_mode == "text"
