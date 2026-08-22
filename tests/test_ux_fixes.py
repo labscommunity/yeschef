@@ -858,3 +858,100 @@ async def test_all_tool_failures_flag_blocked(tmp_path) -> None:
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await runner
                 await harness.aclose()
+
+
+# ------------------------------------------------------------- cycle 5 locks
+
+
+async def test_wait_task_returns_on_input_required() -> None:
+    async with live_hub() as hub:
+        mcp = build_mcp(hub.store, HubConfig(db_path=":memory:", default_identity="claude:test"))
+        async with Client(mcp) as claude:
+            hub.store.register_agent("qworker", kind="worker", node="n", backend="b", tags=[])
+            t = hub.store.submit_task(
+                title="t", spec="needs input soon", created_by="c", assignee="qworker"
+            )
+            hub.store.claim_task(t.id, "qworker")
+
+            async def park():
+                await asyncio.sleep(0.3)
+                hub.store.request_input(t.id, "qworker", "which db?")
+
+            mover = asyncio.create_task(park())
+            waited = (
+                await claude.call_tool(
+                    "wait_task", {"task_id": t.id, "wait_s": 30, "until": "done"}
+                )
+            ).data
+            await mover
+            assert waited["task"]["state"] == "input_required"
+            assert "which db" in waited["task"]["progress"]["message"]
+
+
+async def test_uncollected_counter_is_live_and_dismissable() -> None:
+    async with live_hub() as hub:
+        mcp = build_mcp(hub.store, HubConfig(db_path=":memory:", default_identity="claude:test"))
+        async with Client(mcp) as claude:
+            hub.store.register_agent("maker", kind="worker", node="n", backend="b", tags=[])
+            t = hub.store.submit_task(
+                title="t", spec="make a file", created_by="c", assignee="maker", project="p1"
+            )
+            hub.store.claim_task(t.id, "maker")
+            art = hub.store.save_artifact("out.txt", "text/plain", b"data", "maker")
+            hub.store.complete_task(
+                t.id,
+                "maker",
+                {"text": "done", "files": [{"path": "out.txt", "artifact_id": art["id"]}]},
+            )
+            who = (await claude.call_tool("whoami", {})).data
+            assert who["uncollected_results"] == 1
+            assert who["uncollected_sample"][0]["project"] == "p1"
+            # scoped: another project sees zero
+            scoped = (await claude.call_tool("whoami", {"project": "other"})).data
+            assert "uncollected_results" not in scoped
+            # collecting the file clears the counter
+            await claude.call_tool("task_files", {"task_id": t.id, "include_content": True})
+            after = (await claude.call_tool("whoami", {})).data
+            assert "uncollected_results" not in after
+
+
+async def test_dismiss_results_sweeps_without_fetching() -> None:
+    async with live_hub() as hub:
+        mcp = build_mcp(hub.store, HubConfig(db_path=":memory:", default_identity="claude:test"))
+        async with Client(mcp) as claude:
+            hub.store.register_agent("maker2", kind="worker", node="n", backend="b", tags=[])
+            t = hub.store.submit_task(
+                title="t", spec="make a file", created_by="c", assignee="maker2"
+            )
+            hub.store.claim_task(t.id, "maker2")
+            art = hub.store.save_artifact("x.txt", "text/plain", b"d", "maker2")
+            hub.store.complete_task(
+                t.id,
+                "maker2",
+                {"text": "done", "files": [{"path": "x.txt", "artifact_id": art["id"]}]},
+            )
+            swept = (await claude.call_tool("dismiss_results", {"dismiss_all": True})).data
+            assert swept["dismissed_tasks"] == 1
+            who = (await claude.call_tool("whoami", {})).data
+            assert "uncollected_results" not in who
+
+
+async def test_list_tasks_running_alias_and_state_enum_error() -> None:
+    async with live_hub() as hub:
+        mcp = build_mcp(hub.store, HubConfig(db_path=":memory:", default_identity="claude:test"))
+        async with Client(mcp) as claude:
+            ok = (await claude.call_tool("list_tasks", {"state": "running"})).data
+            assert "tasks" in ok
+            err = (await claude.call_tool("list_tasks", {"state": "sprinting"})).data
+            assert err["error"]["code"] == "invalid"
+            assert "working" in err["error"]["message"]
+
+
+def test_extraction_prefers_spec_named_file() -> None:
+    from farmteam.agent.harness import _extract_lone_code_block
+
+    got = _extract_lone_code_block(
+        "Result:\n```python\nx = 1\n```",
+        spec_hint="Write validate.py with two functions and doctests.",
+    )
+    assert got == ("validate.py", "x = 1\n")

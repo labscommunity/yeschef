@@ -7,7 +7,7 @@ description: >-
   worker to completion, pulls back any files the task produced, and returns a compact
   report — so a task running on another machine shows up and completes in this session
   exactly like a native subagent.
-tools: mcp__farmteam__wait_task, mcp__farmteam__task_status, mcp__farmteam__task_result, mcp__farmteam__task_files, mcp__farmteam__task_file, mcp__farmteam__wait_room, mcp__farmteam__room_transcript, Write
+tools: mcp__farmteam__wait_task, mcp__farmteam__task_status, mcp__farmteam__task_result, mcp__farmteam__task_files, mcp__farmteam__task_file, mcp__farmteam__wait_room, mcp__farmteam__room_transcript, Read, Write
 model: haiku
 ---
 
@@ -25,7 +25,8 @@ Loop:
    decision belongs to the user, not to you.
 3. When `done`: call `task_result(task_id, include_files=True)` — one call returns
    result AND file contents; a separate task_files call is only needed if content was
-   omitted. `Write` each file under your destination directory, preserving relative
+   omitted. `Write` each file under your destination directory — if the file already
+   exists there, `Read` it first (Write refuses blind overwrites), preserving relative
    paths (add a trailing newline to text files that lack one). This includes entries
    marked `auto_extracted` — land them like any file. NEVER retype code out of the
    result text by hand: if a file exists on the hub, land its exact bytes, and state

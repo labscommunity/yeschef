@@ -1100,37 +1100,57 @@ class Store:
             row = self._db.execute("SELECT MIN(created_at) AS t FROM tasks").fetchone()
         return row["t"]
 
-    def unretrieved_result_entries(self, limit: int = 3) -> list[dict]:
+    def unretrieved_result_entries(self, limit: int = 3, project: str | None = None) -> list[dict]:
         """A few identifying rows for the uncollected counter, so a session can judge
         relevance (same project or not) without extra calls."""
-        with self._lock:
-            rows = self._db.execute(
-                """SELECT id, title, project FROM tasks
-                    WHERE state = ? AND result_json LIKE '%artifact_id%'
-                    ORDER BY finished_at DESC LIMIT ?""",
-                (str(TaskState.COMPLETED), limit),
-            ).fetchall()
-        return [dict(r) for r in rows]
+        rows = self._unretrieved_rows(project)
+        return [{"id": r.id, "title": r.title, "project": r.project} for r in rows[:limit]]
 
-    def unretrieved_results(self) -> int:
-        """Completed tasks whose artifacts nobody ever fetched — work done and paid
-        for that no session has collected (a crashed or rate-limited session's
-        leftovers)."""
-        with self._lock:
-            row = self._db.execute(
-                """SELECT COUNT(DISTINCT t.id) AS n FROM tasks t
-                     JOIN artifacts a ON a.created_by = t.assignee
-                    WHERE t.state = ? AND t.result_json LIKE '%artifact_id%'
-                      AND NOT EXISTS (
-                          SELECT 1 FROM artifacts a2
-                           WHERE a2.id IN (
-                               SELECT json_extract(value, '$.artifact_id')
-                                 FROM json_each(json_extract(t.result_json, '$.files'))
-                           ) AND a2.fetched_at IS NOT NULL
-                      )""",
-                (str(TaskState.COMPLETED),),
-            ).fetchone()
-        return row["n"]
+    def _unretrieved_rows(self, project: str | None = None):
+        """Completed tasks with files none of which anyone ever fetched."""
+
+        out = []
+        for t in self.list_tasks(state=TaskState.COMPLETED, project=project, limit=500):
+            files = (t.result or {}).get("files") or []
+            ids = [f["artifact_id"] for f in files if "artifact_id" in f]
+            if not ids:
+                continue
+            with self._lock:
+                fetched = self._db.execute(
+                    f"SELECT COUNT(*) AS n FROM artifacts WHERE id IN "
+                    f"({','.join('?' * len(ids))}) AND fetched_at IS NOT NULL",
+                    ids,
+                ).fetchone()["n"]
+            if fetched == 0:
+                out.append(t)
+        return out
+
+    def unretrieved_results(self, project: str | None = None) -> int:
+        return len(self._unretrieved_rows(project))
+
+    def dismiss_results(self, task_ids: list[str] | None = None, dismiss_all: bool = False) -> int:
+        """Mark uncollected results' artifacts fetched without pulling them."""
+        targets = (
+            self._unretrieved_rows()
+            if dismiss_all
+            else [self.require_task(t) for t in task_ids or []]
+        )
+        n = 0
+        for t in targets:
+            ids = [
+                f["artifact_id"] for f in (t.result or {}).get("files") or [] if "artifact_id" in f
+            ]
+            if not ids:
+                continue
+            with self._lock:
+                self._db.execute(
+                    f"UPDATE artifacts SET fetched_at = COALESCE(fetched_at, ?) "
+                    f"WHERE id IN ({','.join('?' * len(ids))})",
+                    [now(), *ids],
+                )
+                self._db.commit()
+            n += 1
+        return n
 
     def active_task_counts(self) -> dict[str, int]:
         """Live tasks per assignee, so the roster can show busy/idle directly."""

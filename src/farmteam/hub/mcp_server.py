@@ -140,7 +140,7 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
 
     @mcp.tool
     @_guard
-    def whoami() -> dict:
+    def whoami(project: str | None = None) -> dict:
         """This session's hub identity, plus hub context worth knowing at session
         start: when task history begins, and completed tasks whose files no session
         ever collected (a crashed/rate-limited session's finished work — offer to
@@ -150,11 +150,23 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
         begins = store.history_begins_at()
         if begins:
             info["history_begins_at"] = begins
-        orphans = store.unretrieved_results()
+        orphans = store.unretrieved_results(project=project)
         if orphans:
             info["uncollected_results"] = orphans
-            info["uncollected_sample"] = store.unretrieved_result_entries()
+            info["uncollected_sample"] = store.unretrieved_result_entries(project=project)
         return info
+
+    @mcp.tool
+    @_guard
+    def dismiss_results(task_ids: list[str] | None = None, dismiss_all: bool = False) -> dict:
+        """Acknowledge uncollected task results so they stop appearing in whoami.
+
+        Marks their artifacts as fetched without pulling content. Pass task_ids, or
+        dismiss_all=True to sweep the whole backlog after deciding none of it is
+        wanted.
+        """
+        n = store.dismiss_results(task_ids=task_ids, dismiss_all=dismiss_all)
+        return {"dismissed_tasks": n}
 
     @mcp.tool
     @_guard
@@ -301,7 +313,9 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
 
     @mcp.tool
     @_guard
-    async def wait_room(room: str, from_seq: int = 0, wait_s: float = 60.0) -> dict:
+    async def wait_room(
+        room: str, from_seq: int = 0, wait_s: float = 60.0, until: str = "message"
+    ) -> dict:
         """Wait (up to 60s) for new messages in a room — the dialogue counterpart of
         wait_task.
 
@@ -315,7 +329,7 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
         while asyncio.get_running_loop().time() < deadline:
             messages = store.fetch_messages(room, after_seq=from_seq, limit=100)
             target = store.require_room(room)
-            if messages or target.archived:
+            if (messages and until != "archived") or target.archived:
                 return {
                     "room": target.to_dict(),
                     "messages": [m.to_dict() for m in messages],
@@ -352,7 +366,8 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
         """Have local agents converse with each other autonomously toward a goal.
 
         Creates a bounded room, seeds it with the goal, and hands the floor to the first
-        agent. Returns immediately; workers reply asynchronously and the first turn
+        agent. NOTE: the seed goal counts toward max_messages — for N worker turns
+        pass max_messages=N+1. Returns immediately; workers reply asynchronously and the first turn
         typically lands within a minute — follow along with wait_room (or hand it to
         the farmteam-watcher subagent) rather than reporting "running" from the seed
         alone. Steer by posting into the room; stop with archive_room.
@@ -526,6 +541,13 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
         the identity an earlier session used — prefer project= for cross-session
         recovery of a project's tasks.
         """
+        if state == "running":
+            state = "working"
+        if state and state not in [str(v) for v in TaskState]:
+            raise HubError(
+                ErrorCode.INVALID,
+                f"'{state}' is not a task state — valid: " + ", ".join(str(v) for v in TaskState),
+            )
         tasks = store.list_tasks(
             state=TaskState(state) if state else None,
             assignee=assignee,
@@ -613,7 +635,9 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
         initial = str(task.state)
         deadline = asyncio.get_running_loop().time() + min(wait_s, MAX_LONG_POLL_S)
         while asyncio.get_running_loop().time() < deadline:
-            if task.state.terminal:
+            if task.state.terminal or str(task.state) == "input_required":
+                # input_required needs the CALLER to act — waiting through it would
+                # hide the worker's question for up to the whole window.
                 break
             if until != "done" and str(task.state) != initial:
                 break

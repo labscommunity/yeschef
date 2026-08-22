@@ -299,9 +299,10 @@ class Harness:
                 "You have been given a task. The spec is pre-authorized: doing what it "
                 "says needs no permission, so never ask for confirmation to proceed. "
                 "Work it to completion and finish with a clear summary of what you did "
-                "and what the answer is. Only if you genuinely cannot proceed without a "
-                "decision the spec does not answer, say exactly NEED_INPUT: followed by "
-                "your question."
+                "and what the answer is. Before asking anything, re-read the spec — if "
+                "the answer is already in it, proceed. Only if you genuinely cannot "
+                "proceed without a decision the spec does not answer, say exactly "
+                "NEED_INPUT: followed by your question."
             )
             if workspace is not None:
                 system += (
@@ -347,7 +348,7 @@ class Harness:
                             )
                         )
                         continue
-                    salvage = _extract_lone_code_block(text)
+                    salvage = _extract_lone_code_block(text, task.get("spec") or "")
                     if salvage and workspace is not None:
                         # The tool call was garbage but the payload may not be:
                         # ship the code with loud flags instead of losing it.
@@ -420,6 +421,23 @@ class Harness:
                         "re-dispatch in smaller pieces]"
                     )
                 payload["tool_log"] = self._task_tool_log.pop(task_id, [])
+                claims_execution = re.search(
+                    r"\b(tests?\s+(all\s+)?pass|passed\s+successfully|ran\s+the\s+tests|"
+                    r"verified\s+by\s+running|all\s+\d+\s+tests)\b",
+                    text,
+                    re.IGNORECASE,
+                )
+                executed_any = any(
+                    e["tool"] == "shell" and not e["error"] for e in payload["tool_log"]
+                )
+                if claims_execution and not executed_any:
+                    # Workers chronically narrate verification that never happened.
+                    payload["unverified_claims"] = True
+                    payload["text"] += (
+                        "\n\n[worker note: this reply claims tests/commands ran, but "
+                        "this worker executed 0 shell commands — treat verification "
+                        "claims as unexecuted]"
+                    )
                 files = await self._collect_workspace(task_id, workspace)
                 if files is not None:
                     payload["files"] = files
@@ -433,7 +451,7 @@ class Harness:
                     # single fenced block as a real artifact (flagged as extracted),
                     # so task_files works; anything murkier still gets the warning.
                     payload["code_in_text_only"] = True
-                    extracted = _extract_lone_code_block(text)
+                    extracted = _extract_lone_code_block(text, task.get("spec") or "")
                     if extracted and workspace is not None:
                         name, body = extracted
                         (workspace / name).write_text(body)
@@ -498,22 +516,49 @@ class Harness:
             log.warning("hub rejected update for %s: %s", task_id, exc)
         except Exception as exc:  # noqa: BLE001 - report failure rather than die silently
             log.exception("task %s failed", task_id)
+            partial = None
+            with contextlib.suppress(Exception):
+                partial = await self._collect_workspace(task_id, workspace)
+            partial_result = (
+                {"files": [{**f, "partial": True} for f in partial], "partial": True}
+                if partial
+                else None
+            )
+            if "timeout" in type(exc).__name__.lower() or "Timeout" in str(exc):
+                with contextlib.suppress(HubClientError):
+                    await self.client.fail(
+                        task_id,
+                        f"model generation exceeded this worker's "
+                        f"{self.config.backend.get('timeout_s', 600)}s call budget — "
+                        "the output demanded likely exceeds what this model can emit "
+                        f"in one call (max_tokens {self.config.max_tokens}). "
+                        "Re-dispatch in smaller pieces or as chunked file writes.",
+                        result=partial_result,
+                    )
+                return
             where = (
                 f"{self.config.name}@{self.config.node} "
                 f"({self.backend.name}/{self.backend.model} at "
                 f"{getattr(self.backend, 'base_url', 'n/a')} on that node)"
             )
             with contextlib.suppress(HubClientError):
-                await self.client.fail(task_id, f"{where}: {type(exc).__name__}: {exc}")
+                await self.client.fail(
+                    task_id, f"{where}: {type(exc).__name__}: {exc}", result=partial_result
+                )
         finally:
             ticker.cancel()
 
     async def _progress_ticker(self, task_id: str) -> None:
+        # NB: skipped while the task is parked on input_required — the progress
+        # message carries the worker's question then, and a heartbeat overwrite
+        # was hiding it from wait_task callers.
         """Heartbeat progress while the model generates, so a mid-flight status check
         can tell a healthy long generation from a wedged worker."""
         started = asyncio.get_running_loop().time()
         while True:
             await asyncio.sleep(30.0)
+            if task_id in self._input_waiters:
+                continue
             elapsed = int(asyncio.get_running_loop().time() - started)
             tools_run = len(self._task_tool_log.get(task_id, []))
             with contextlib.suppress(Exception):
@@ -680,7 +725,7 @@ EXT_BY_LANG = {
 }
 
 
-def _extract_lone_code_block(text: str) -> tuple[str, str] | None:
+def _extract_lone_code_block(text: str, spec_hint: str = "") -> tuple[str, str] | None:
     """(filename, body) when the reply contains exactly one fenced code block.
 
     The name comes from a filename mentioned just before the fence when there is
@@ -699,6 +744,13 @@ def _extract_lone_code_block(text: str) -> tuple[str, str] | None:
     named = re.findall(r"[`\s(]([\w./-]+\.[a-z]{1,4})[`\s):,]", before + " ")
     if named:
         name = named[-1].lstrip("./")
+    elif spec_hint:
+        hinted = re.findall(r"[`\s(]([\w./-]+\.[a-z]{1,4})[`\s):,.]", spec_hint + " ")
+        name = (
+            hinted[0].lstrip("./")
+            if len(set(hinted)) == 1 and hinted
+            else f"extracted.{EXT_BY_LANG.get(lang.lower(), 'txt')}"
+        )
     else:
         name = f"extracted.{EXT_BY_LANG.get(lang.lower(), 'txt')}"
     return name, body if body.endswith("\n") else body + "\n"

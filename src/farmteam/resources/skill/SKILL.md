@@ -20,6 +20,11 @@ cheap cloud provider. Either way they cost no Anthropic tokens and run outside t
 session, so delegating to them frees your context and your rate limit. You dispatch work
 to them and converse with them.
 
+In this skill, **"worker" means a farmteam worker** — a model on the user's own
+hardware. Native Claude subagents are not "workers": substituting one for a requested
+farm dispatch spends the tokens the user is trying to save, and doing it silently is
+never acceptable — name the substitution and its cost if you genuinely must.
+
 Two facts shape everything below. **Workers cannot see this machine's files** — they run
 jailed on their own machine, so every input a task needs must be inlined in the spec, and
 whatever the worker builds comes back through `task_files`/`task_file`. And if your
@@ -138,6 +143,17 @@ config files.
 - **Adopt running work.** If you discover an in-flight task whose artifact the user
   wants, spawn the watcher for it (id + destination) instead of ending with "want me
   to check later?" — the done moment should never need another prompt.
+- **Size the ask against the worker's ceiling.** The roster's max_tokens: tag is a
+  budget: a spec demanding more output than one call can emit (huge files, hundreds of
+  repeated elements) will stall or truncate. Restructure — chunked tasks, compact
+  representations — instead of dispatching a doomed ask and auditing the wreck.
+- **Never end your turn with un-landed work unnamed.** If dispatched work hasn't
+  landed when you reply, say so plainly and hand over the task id plus the collection
+  call (task_result/task_files) a later session can run. "Waiting on the worker" as a
+  sign-off, with nothing collectable named, strands the work.
+- **Cross-session asks start at the hub.** "Where's the file a worker made?" →
+  `list_tasks(project=...)` FIRST, not a filesystem hunt: artifacts only reach disk
+  after someone lands them.
 - **Watcher applies to observe tasks too.** Forensics or status asks don't change the
   waiting rule: spawn the watcher, then reconstruct the timeline afterwards from
   `task_status(verbose=True, event_limit=...)`. There is no setting that forbids
