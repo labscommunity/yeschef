@@ -63,6 +63,11 @@ class Harness:
 
     async def run(self) -> None:
         tags = list(self.config.tags)
+        if not any(t.startswith("tools:") for t in tags):
+            # Specs that demand actions a worker cannot perform (run this, fetch that)
+            # stall into input_required; the roster should say what is possible.
+            granted = "+".join(self.config.tools.allow) if self.tools.enabled else "none"
+            tags.append(f"tools:{granted}")
         if not any(t.startswith("max_tokens:") for t in tags):
             # The output ceiling decides what tasks fit; invisible, it dooms
             # right-sized-looking dispatches that only fail after a full wait cycle.
@@ -315,14 +320,35 @@ class Harness:
                     and tool_rounds == 0
                     and _looks_like_unexecuted_tool_calls(text)
                 ):
-                    # Some models describe a tool call in prose or JSON instead of
-                    # emitting one. Reporting that as a finished task is worse than
-                    # failing: the requester believes work happened that never did.
+                    if round_index == 0:
+                        # One corrective retry before giving up: echo the schema
+                        # expectation back. A single malformed emission is not a
+                        # verdict on the model's capability.
+                        turns.append(Turn(role="assistant", content=text))
+                        turns.append(
+                            Turn(
+                                role="user",
+                                content=(
+                                    "Your last reply described tool calls as text; "
+                                    "nothing was executed. Emit the tool call natively "
+                                    "(or as a single JSON object "
+                                    '{"name": ..., "arguments": {...}}) and complete '
+                                    "the task."
+                                ),
+                            )
+                        )
+                        continue
                     await self.client.fail(
                         task_id,
-                        "model wrote tool-call-like text that could not be parsed into any "
-                        f"granted tool — nothing was executed. Model {self.backend.model} "
-                        "may not support tool calling; try one that does.",
+                        "this attempt emitted tool-call-like text that could not be "
+                        "parsed into any granted tool, twice — nothing was executed. "
+                        "Retry with a simpler spec, or check whether "
+                        f"{self.backend.model} handles tool calling reliably.",
+                        result={
+                            "tokens": result.total_tokens,
+                            "tool_rounds": 0,
+                            "model": self.backend.model,
+                        },
                     )
                     return
 
@@ -365,15 +391,35 @@ class Harness:
                     and not payload["tool_log"]
                     and re.search(r"```[a-zA-Z]*\n", text)
                 ):
-                    # Code delivered only as prose is not delivered. Flag it so the
-                    # requester extracts or re-dispatches instead of trusting a
-                    # completion with an empty manifest.
+                    # Code delivered only as prose is not delivered. Materialize a
+                    # single fenced block as a real artifact (flagged as extracted),
+                    # so task_files works; anything murkier still gets the warning.
                     payload["code_in_text_only"] = True
-                    payload["text"] = payload["text"] + (
-                        "\n\n[worker warning: this reply contains code but no files "
-                        "were written to the workspace — pull it from the text or "
-                        "re-dispatch demanding file_write]"
-                    )
+                    extracted = _extract_lone_code_block(text)
+                    if extracted and workspace is not None:
+                        name, body = extracted
+                        (workspace / name).write_text(body)
+                        files = await self._collect_workspace(task_id, workspace)
+                        if files:
+                            for f in files:
+                                f["auto_extracted"] = True
+                            payload["files"] = files
+                            payload["text"] += (
+                                f"\n\n[worker note: the code block was not written "
+                                f"via file_write; the harness extracted it as "
+                                f"'{name}' — verify before trusting]"
+                            )
+                    if not files:
+                        payload["text"] = payload["text"] + (
+                            "\n\n[worker warning: this reply contains code but no "
+                            "files were written to the workspace — pull it from the "
+                            "text or re-dispatch demanding file_write]"
+                        )
+                elif self.tools.enabled and not files and not payload["tool_log"]:
+                    # No tools ran, no files, no code — a bare "done" claim. The hub
+                    # cannot know if that is legitimate (a pure-text answer) or a
+                    # no-op, so flag it for the requester to judge.
+                    payload["no_output"] = True
                 if (
                     getattr(self.backend, "uses_workspace", False)
                     and not files
@@ -561,6 +607,45 @@ class Harness:
                 temperature=self.config.temperature,
             )
         return result, iterations
+
+
+EXT_BY_LANG = {
+    "python": "py",
+    "py": "py",
+    "javascript": "js",
+    "js": "js",
+    "typescript": "ts",
+    "html": "html",
+    "css": "css",
+    "json": "json",
+    "bash": "sh",
+    "sh": "sh",
+    "toml": "toml",
+    "yaml": "yaml",
+    "sql": "sql",
+    "markdown": "md",
+    "md": "md",
+}
+
+
+def _extract_lone_code_block(text: str) -> tuple[str, str] | None:
+    """(filename, body) when the reply contains exactly one fenced code block.
+
+    The name comes from a filename mentioned just before the fence when there is
+    one, else from the fence's language tag. More than one block is ambiguous —
+    leave those to the requester.
+    """
+    blocks = re.findall(r"```([a-zA-Z]*)\n(.*?)```", text, re.DOTALL)
+    if len(blocks) != 1:
+        return None
+    lang, body = blocks[0]
+    before = text[: text.index("```")]
+    named = re.findall(r"[`\s(]([\w./-]+\.[a-z]{1,4})[`\s):,]", before + " ")
+    if named:
+        name = named[-1].lstrip("./")
+    else:
+        name = f"extracted.{EXT_BY_LANG.get(lang.lower(), 'txt')}"
+    return name, body if body.endswith("\n") else body + "\n"
 
 
 def _parse_text_tool_calls(text: str, allowed: set[str]) -> list[ToolCall]:

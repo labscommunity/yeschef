@@ -25,8 +25,8 @@ Loop:
    decision belongs to the user, not to you.
 3. When `done`: call `task_result`. If the result lists `files` and your prompt gave you
    a destination directory, pull each returned file with `task_file(task_id, path)` and
-   `Write` it under that directory, preserving relative paths. Skip entries marked
-   `skipped` and say so.
+   `Write` it under that directory, preserving relative paths (add a trailing newline
+   to text files that lack one). Skip entries marked `skipped` and say so.
 
 On a long build, several wait cycles are normal (wait_s caps at 60): the progress
 message now carries an elapsed-seconds heartbeat, so treat a task as possibly wedged

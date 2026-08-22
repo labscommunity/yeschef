@@ -19,6 +19,14 @@ def now() -> float:
     return time.time()
 
 
+def _iso(ts: float | None) -> str | None:
+    if not ts:
+        return None
+    import datetime as _dt
+
+    return _dt.datetime.fromtimestamp(ts, _dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def new_id(prefix: str, length: int = 10) -> str:
     body = "".join(secrets.choice(_ALPHABET) for _ in range(length))
     return f"{prefix}_{body}"
@@ -304,6 +312,7 @@ class Task:
     priority: int = 0
     timeout_s: float = DEFAULT_TASK_TIMEOUT_S
     dedupe_key: str | None = None
+    project: str | None = None
     room_id: str | None = None
     progress_pct: float | None = None
     progress_msg: str | None = None
@@ -323,6 +332,7 @@ class Task:
             "state": str(self.state),
             "assignee": self.assignee,
             "selector": self.selector,
+            "project": self.project,
             "priority": self.priority,
             "timeout_s": self.timeout_s,
             "room_id": self.room_id,
@@ -333,6 +343,9 @@ class Task:
             "created_at": self.created_at,
             "claimed_at": self.claimed_at,
             "finished_at": self.finished_at,
+            "created_iso": _iso(self.created_at),
+            "claimed_iso": _iso(self.claimed_at),
+            "finished_iso": _iso(self.finished_at),
         }
 
     def to_summary(self) -> dict:
@@ -348,6 +361,7 @@ class Task:
             "state": str(self.state),
             "assignee": self.assignee,
             "created_by": self.created_by,
+            "project": self.project,
             "room_id": self.room_id,
             "progress": {"pct": self.progress_pct, "message": self.progress_msg},
             "error": self.error,

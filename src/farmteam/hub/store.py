@@ -65,6 +65,16 @@ class Store:
         self._db = sqlite3.connect(self.path, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.executescript(SCHEMA_PATH.read_text())
+        # Idempotent migrations for columns added after a database was created.
+        import contextlib as _ctx
+        import sqlite3 as _sqlite3
+
+        with _ctx.suppress(_sqlite3.OperationalError):
+            self._db.execute("ALTER TABLE tasks ADD COLUMN project TEXT")
+            self._db.commit()
+        with _ctx.suppress(_sqlite3.OperationalError):
+            self._db.execute("ALTER TABLE artifacts ADD COLUMN fetched_at REAL")
+            self._db.commit()
         self._db.commit()
 
     def close(self) -> None:
@@ -661,6 +671,7 @@ class Store:
         priority: int = 0,
         timeout_s: float = DEFAULT_TASK_TIMEOUT_S,
         dedupe_key: str | None = None,
+        project: str | None = None,
     ) -> Task:
         if not assignee and not selector:
             raise HubError(ErrorCode.INVALID, "assignee or selector required")
@@ -671,15 +682,27 @@ class Store:
                 ).fetchone()
             if row:
                 existing = self.get_task(row["id"])
-                if existing is not None:
+                if existing is not None and existing.state in (
+                    TaskState.FAILED,
+                    TaskState.CANCELLED,
+                ):
+                    # A dead task must not swallow a fresh attempt: release the key
+                    # so the resubmit (possibly with a new spec/assignee) proceeds.
+                    with self._lock:
+                        self._db.execute(
+                            "UPDATE tasks SET dedupe_key = NULL WHERE id = ?",
+                            (existing.id,),
+                        )
+                        self._db.commit()
+                elif existing is not None:
                     return existing
         tid = new_id("task")
         ts = now()
         with self._lock:
             self._db.execute(
                 """INSERT INTO tasks (id, title, spec, created_by, state, assignee, selector,
-                                      priority, timeout_s, dedupe_key, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                      priority, timeout_s, dedupe_key, project, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     tid,
                     title,
@@ -691,6 +714,7 @@ class Store:
                     priority,
                     timeout_s,
                     dedupe_key,
+                    project,
                     ts,
                 ),
             )
@@ -792,9 +816,11 @@ class Store:
         self._require_holder(task_id, agent)
         return self._finish(task_id, TaskState.COMPLETED, result=result)
 
-    def fail_task(self, task_id: str, agent: str, error: str) -> Task:
+    def fail_task(self, task_id: str, agent: str, error: str, result: dict | None = None) -> Task:
+        """`result` may carry partial output/usage — a failed run's tokens still cost
+        electricity, and the accounting should not have holes."""
         self._require_holder(task_id, agent)
-        return self._finish(task_id, TaskState.FAILED, error=error)
+        return self._finish(task_id, TaskState.FAILED, result=result, error=error)
 
     def cancel_task(self, task_id: str, by: str, privileged: bool = False) -> Task:
         task = self.get_task(task_id)
@@ -836,6 +862,13 @@ class Store:
         task = self.get_task(task_id)
         if task is None:
             raise not_found(f"task '{task_id}'")
+        with self._lock:
+            # The parked question is stale the moment an answer lands.
+            self._db.execute(
+                "UPDATE tasks SET progress_msg = ? WHERE id = ? AND state = ?",
+                ("input received, resuming", task_id, str(TaskState.INPUT_REQUIRED)),
+            )
+            self._db.commit()
         if task.state is not TaskState.INPUT_REQUIRED:
             raise HubError(ErrorCode.CONFLICT, f"task is {task.state}, not input_required", 409)
         room = self.ensure_task_room(task_id)
@@ -898,6 +931,18 @@ class Store:
     def require_task(self, task_id: str) -> Task:
         task = self.get_task(task_id)
         if task is None:
+            begins = self.history_begins_at()
+            if begins:
+                import datetime as _dt
+
+                iso = _dt.datetime.fromtimestamp(begins, _dt.UTC).strftime("%Y-%m-%d %H:%M UTC")
+                raise HubError(
+                    ErrorCode.NOT_FOUND,
+                    f"task '{task_id}' not found — this hub's task history begins "
+                    f"{iso}; older ids are gone. list_tasks shows what exists.",
+                    404,
+                )
+        if task is None:
             raise not_found(f"task '{task_id}'")
         return task
 
@@ -906,10 +951,14 @@ class Store:
         state: TaskState | None = None,
         assignee: str | None = None,
         created_by: str | None = None,
+        project: str | None = None,
         limit: int = 100,
     ) -> list[Task]:
         sql = "SELECT * FROM tasks"
         clauses, args = [], []
+        if project:
+            clauses.append("project = ?")
+            args.append(project)
         if state is not None:
             clauses.append("state = ?")
             args.append(str(state))
@@ -1032,6 +1081,7 @@ class Store:
             priority=row["priority"],
             timeout_s=row["timeout_s"],
             dedupe_key=row["dedupe_key"],
+            project=row["project"] if "project" in row.keys() else None,
             room_id=row["room_id"],
             progress_pct=row["progress_pct"],
             progress_msg=row["progress_msg"],
@@ -1044,6 +1094,31 @@ class Store:
         )
 
     # ----------------------------------------------------------------- stats
+
+    def history_begins_at(self) -> float | None:
+        with self._lock:
+            row = self._db.execute("SELECT MIN(created_at) AS t FROM tasks").fetchone()
+        return row["t"]
+
+    def unretrieved_results(self) -> int:
+        """Completed tasks whose artifacts nobody ever fetched — work done and paid
+        for that no session has collected (a crashed or rate-limited session's
+        leftovers)."""
+        with self._lock:
+            row = self._db.execute(
+                """SELECT COUNT(DISTINCT t.id) AS n FROM tasks t
+                     JOIN artifacts a ON a.created_by = t.assignee
+                    WHERE t.state = ? AND t.result_json LIKE '%artifact_id%'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM artifacts a2
+                           WHERE a2.id IN (
+                               SELECT json_extract(value, '$.artifact_id')
+                                 FROM json_each(json_extract(t.result_json, '$.files'))
+                           ) AND a2.fetched_at IS NOT NULL
+                      )""",
+                (str(TaskState.COMPLETED),),
+            ).fetchone()
+        return row["n"]
 
     def active_task_counts(self) -> dict[str, int]:
         """Live tasks per assignee, so the roster can show busy/idle directly."""
@@ -1142,6 +1217,12 @@ class Store:
             row = self._db.execute(
                 "SELECT * FROM artifacts WHERE id = ?", (artifact_id,)
             ).fetchone()
+            if row:
+                self._db.execute(
+                    "UPDATE artifacts SET fetched_at = COALESCE(fetched_at, ?) WHERE id = ?",
+                    (now(), artifact_id),
+                )
+                self._db.commit()
         if row is None:
             raise not_found(f"artifact '{artifact_id}'")
         directory = self._artifact_dir()

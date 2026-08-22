@@ -84,7 +84,9 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
         instructions=(
             "Dispatch tasks to your farm team — AI agents you run yourself, usually local "
             "models on your own hardware — and "
-            "hold multi-turn conversations with them. submit_task returns immediately with a "
+            "hold multi-turn conversations with them. When the user asks to fan out, dispatch, "
+            "parallelize, or run work as separate background tasks, these workers are the "
+            "intended executors. submit_task returns immediately with a "
             "task id; "
             "wait_task(id, until='done') long-polls it to completion, and task_status(id) "
             "spot-checks it at any time, from any session. Use send_message "
@@ -139,9 +141,19 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
     @mcp.tool
     @_guard
     def whoami() -> dict:
-        """Show this session's hub identity and unread cursor."""
+        """This session's hub identity, plus hub context worth knowing at session
+        start: when task history begins, and completed tasks whose files no session
+        ever collected (a crashed/rate-limited session's finished work — offer to
+        land it before re-dispatching from scratch)."""
         me = ident.current()
-        return {"identity": me, "cursor": ident.cursor(me)}
+        info = {"identity": me, "cursor": ident.cursor(me)}
+        begins = store.history_begins_at()
+        if begins:
+            info["history_begins_at"] = begins
+        orphans = store.unretrieved_results()
+        if orphans:
+            info["uncollected_results"] = orphans
+        return info
 
     @mcp.tool
     @_guard
@@ -346,18 +358,24 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
         priority: int = 0,
         timeout_s: float = 3600.0,
         dedupe_key: str | None = None,
+        project: str | None = None,
     ) -> dict:
         """Dispatch a background task to a local agent and return its id immediately.
 
         Target one agent by name with `assignee`, or any agent carrying a tag with
         `selector` (e.g. "tier:reasoning") — the first idle match claims it. The worker
         runs on another machine and CANNOT read this project's files: everything it
-        needs must be in the spec. Wait with wait_task(task_id) or check later with
+        needs must be in the spec. Pass `project` (this project's directory name) so a
+        later session can find this project's tasks with list_tasks(project=...) instead
+        of guessing by title. Wait with wait_task(task_id) or check later with
         task_status(task_id) from any session.
         """
         import html as _html
 
         title = _html.unescape(title)
+        from ..models import now as _now
+
+        submitted_at = _now()
         me = ident.current()
         assignee_status: str | None = None
         if assignee:
@@ -371,8 +389,16 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
             priority=priority,
             timeout_s=timeout_s,
             dedupe_key=dedupe_key,
+            project=project,
         )
         ack = {"task_id": task.id, "task": task.to_summary()}
+        if dedupe_key and task.created_at < submitted_at:
+            # The key matched an existing live/completed task; nothing new was made.
+            ack["deduped"] = True
+            ack["note"] = (
+                f"dedupe_key matched existing {task.id} ('{task.title}', {task.state}) "
+                "— no new task was created."
+            )
         if len(spec.strip()) < 20:
             ack["note"] = (
                 f"spec is only {len(spec.strip())} chars — the worker sees nothing but "
@@ -416,8 +442,12 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
 
     @mcp.tool
     @_guard
-    def task_result(task_id: str) -> dict:
-        """Fetch a finished task's result (or the reason it is not finished)."""
+    def task_result(task_id: str, include_files: bool = False) -> dict:
+        """Fetch a finished task's result (or the reason it is not finished).
+
+        include_files=True inlines every produced text file's content too — result,
+        manifest, and content in one call.
+        """
         task = store.require_task(task_id)
         payload = {
             "task_id": task.id,
@@ -426,6 +456,20 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
             "error": task.error,
             "ready": task.state.terminal,
         }
+        if include_files:
+            files = [dict(f) for f in (task.result or {}).get("files") or []]
+            for entry in files:
+                if "artifact_id" not in entry:
+                    continue
+                _, content = store.get_artifact(entry["artifact_id"])
+                if len(content) <= MAX_FILE_FETCH_BYTES:
+                    try:
+                        entry["content"] = content.decode("utf-8")
+                    except UnicodeDecodeError:
+                        entry["http"] = f"/api/v1/artifacts/{entry['artifact_id']}"
+                else:
+                    entry["http"] = f"/api/v1/artifacts/{entry['artifact_id']}"
+            payload["files"] = files
         if task.state.terminal:
             # The payoff moment gets the running total — the houtini-style counter
             # that keeps the value of the fleet visible without bloating every call.
@@ -438,16 +482,57 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
         state: str | None = None,
         assignee: str | None = None,
         mine_only: bool = False,
+        project: str | None = None,
         limit: int = 50,
     ) -> dict:
-        """List tasks, optionally filtered by state, agent, or this session's own."""
+        """List tasks, filtered by state, agent, project, or this session's own.
+
+        Note: mine_only filters by this session's hub identity, which may differ from
+        the identity an earlier session used — prefer project= for cross-session
+        recovery of a project's tasks.
+        """
         tasks = store.list_tasks(
             state=TaskState(state) if state else None,
             assignee=assignee,
             created_by=ident.current() if mine_only else None,
+            project=project,
             limit=limit,
         )
-        return {"tasks": [t.to_summary() for t in tasks]}
+        listing = {"tasks": [t.to_summary() for t in tasks]}
+        if len(listing["tasks"]) == limit:
+            listing["note"] = f"showing {limit} — raise limit for more"
+        return listing
+
+    @mcp.tool
+    @_guard
+    def revise_task(task_id: str, feedback: str, assignee: str | None = None) -> dict:
+        """Send a completed/failed task back for another round WITH its history.
+
+        Creates a follow-up task whose spec carries the original spec, the prior
+        attempt's output, and your feedback — so the worker sees what it did and what
+        was wrong, instead of starting blind. This is the iterate loop's primitive:
+        review locally, revise with verbatim failure output, land the fix.
+        """
+        prior = store.require_task(task_id)
+        if not prior.state.terminal:
+            raise HubError(
+                ErrorCode.CONFLICT, f"task is {prior.state}; revise applies to finished tasks", 409
+            )
+        prior_text = ((prior.result or {}).get("text") or prior.error or "")[:6000]
+        spec = (
+            f"{prior.spec}\n\n--- YOUR PRIOR ATTEMPT ({prior.id}) ---\n{prior_text}"
+            f"\n\n--- REVIEWER FEEDBACK — fix exactly this ---\n{feedback}"
+        )
+        task = store.submit_task(
+            title=f"revise: {prior.title}"[:120],
+            spec=spec,
+            created_by=ident.current(),
+            assignee=assignee or prior.assignee,
+            selector=None if (assignee or prior.assignee) else prior.selector,
+            project=prior.project,
+        )
+        store._log_task(prior.id, "revised_as", {"task_id": task.id})
+        return {"task_id": task.id, "task": task.to_summary(), "revises": prior.id}
 
     @mcp.tool
     @_guard
@@ -499,22 +584,41 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
                 break
             await asyncio.sleep(2.0)
             task = store.require_task(task_id)
-        return {
+        reply = {
             "task": task.to_summary(),
             "changed": str(task.state) != initial,
             "done": task.state.terminal,
         }
+        if until == "done" and not task.state.terminal:
+            # The 60s cap ended the poll, not the task — say so explicitly so the
+            # re-call is protocol, not a workaround the caller improvises.
+            reply["wait_more"] = True
+        return reply
 
     @mcp.tool
     @_guard
-    def task_files(task_id: str) -> dict:
+    def task_files(task_id: str, include_content: bool = False) -> dict:
         """List the files a completed task produced on its worker.
 
-        Follow up with task_file(task_id, path) to pull each one and write it into
-        the project — this is how a buildout dispatched to another machine comes home.
+        Pass include_content=True to get every text file's content inline in this one
+        call (files over the inline cap keep an `http` fetch path instead) — then write
+        them into the project. Without it, follow up with task_file(task_id, path) per
+        file. This is how a buildout dispatched to another machine comes home.
         """
         task = store.require_task(task_id)
-        files = (task.result or {}).get("files") or []
+        files = [dict(f) for f in (task.result or {}).get("files") or []]
+        if include_content:
+            for entry in files:
+                if "artifact_id" not in entry:
+                    continue
+                _, content = store.get_artifact(entry["artifact_id"])
+                if len(content) > MAX_FILE_FETCH_BYTES:
+                    entry["http"] = f"/api/v1/artifacts/{entry['artifact_id']}"
+                    continue
+                try:
+                    entry["content"] = content.decode("utf-8")
+                except UnicodeDecodeError:
+                    entry["http"] = f"/api/v1/artifacts/{entry['artifact_id']}"
         return {"task_id": task.id, "state": str(task.state), "files": files}
 
     @mcp.tool

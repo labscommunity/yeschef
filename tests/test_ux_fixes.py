@@ -408,8 +408,325 @@ async def test_code_in_text_only_is_flagged(tmp_path) -> None:
                 await wait_for(lambda: hub.store.require_task(ack["task_id"]).state == "completed")
                 result = (await claude.call_tool("task_result", {"task_id": ack["task_id"]})).data
                 assert result["result"]["code_in_text_only"] is True
-                assert "no files" in result["result"]["text"]
                 assert result["result"]["tool_log"] == []
+                # The lone block is auto-materialized rather than lost — flagged as such.
+                assert result["result"]["files"][0]["auto_extracted"] is True
+                assert "harness extracted" in result["result"]["text"]
+            finally:
+                runner.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await runner
+                await harness.aclose()
+
+
+# ------------------------------------------------------------- cycle 3 locks
+
+
+async def test_project_affinity_round_trip() -> None:
+    async with live_hub() as hub:
+        mcp = build_mcp(hub.store, HubConfig(db_path=":memory:", default_identity="claude:test"))
+        async with Client(mcp) as claude:
+            hub.store.register_agent("wproj", kind="worker", node="n", backend="b", tags=[])
+            await claude.call_tool(
+                "submit_task",
+                {
+                    "title": "t",
+                    "spec": "long enough spec here",
+                    "assignee": "wproj",
+                    "project": "acme-site",
+                },
+            )
+            await claude.call_tool(
+                "submit_task",
+                {"title": "other", "spec": "long enough spec here", "assignee": "wproj"},
+            )
+            mine = (await claude.call_tool("list_tasks", {"project": "acme-site"})).data["tasks"]
+            assert len(mine) == 1 and mine[0]["project"] == "acme-site"
+
+
+async def test_task_files_include_content_lands_everything_in_one_call() -> None:
+    async with live_hub() as hub:
+        mcp = build_mcp(hub.store, HubConfig(db_path=":memory:", default_identity="claude:test"))
+        async with Client(mcp) as claude:
+            hub.store.register_agent("filer", kind="worker", node="n", backend="b", tags=[])
+            t = hub.store.submit_task(
+                title="t", spec="build stuff please", created_by="c", assignee="filer"
+            )
+            hub.store.claim_task(t.id, "filer")
+            a1 = hub.store.save_artifact("index.html", "text/html", b"<h1>hi</h1>", "filer")
+            a2 = hub.store.save_artifact("css/site.css", "text/css", b"body{}", "filer")
+            hub.store.complete_task(
+                t.id,
+                "filer",
+                {
+                    "text": "done",
+                    "files": [
+                        {"path": "index.html", "artifact_id": a1["id"], "bytes": 11},
+                        {"path": "css/site.css", "artifact_id": a2["id"], "bytes": 6},
+                    ],
+                },
+            )
+            got = (
+                await claude.call_tool("task_files", {"task_id": t.id, "include_content": True})
+            ).data
+            by_path = {f["path"]: f for f in got["files"]}
+            assert by_path["index.html"]["content"] == "<h1>hi</h1>"
+            assert by_path["css/site.css"]["content"] == "body{}"
+
+
+def test_lone_code_block_extraction_names_from_context() -> None:
+    from farmteam.agent.harness import _extract_lone_code_block
+
+    got = _extract_lone_code_block(
+        "Here is the corrected `parser.py`:\n```python\nx = 1\n```\nDone."
+    )
+    assert got == ("parser.py", "x = 1\n")
+    # language fallback when no filename appears
+    got2 = _extract_lone_code_block("Result:\n```python\ny = 2\n```")
+    assert got2 == ("extracted.py", "y = 2\n")
+    # two blocks = ambiguous, leave alone
+    assert _extract_lone_code_block("```py\na\n```\n```py\nb\n```") is None
+
+
+async def test_lone_code_block_is_materialized_as_artifact(tmp_path) -> None:
+    def respond(system, turns):
+        return "Here is `fix.py`:\n```python\nprint('fixed')\n```"
+
+    async with live_hub() as hub:
+        mcp = build_mcp(hub.store, HubConfig(db_path=":memory:", default_identity="claude:test"))
+        async with Client(mcp) as claude:
+            config = AgentConfig(
+                name="fencer",
+                hub=hub.url,
+                backend={"type": "cli", "command": ["true"], "model": "m"},
+                tools=ToolsConfig(
+                    allow=["file_write", "file_read"], file_root=str(tmp_path / "scratch")
+                ),
+            )
+            harness = Harness(config, backend=MockBackend(respond))
+            runner = asyncio.create_task(harness.run())
+            await wait_for(lambda: hub.store.bus.subscriber_count("fencer"))
+            try:
+                ack = (
+                    await claude.call_tool(
+                        "submit_task",
+                        {"title": "t", "spec": "fix the parser file", "assignee": "fencer"},
+                    )
+                ).data
+                await wait_for(lambda: hub.store.require_task(ack["task_id"]).state == "completed")
+                got = (
+                    await claude.call_tool(
+                        "task_files", {"task_id": ack["task_id"], "include_content": True}
+                    )
+                ).data
+                assert len(got["files"]) == 1
+                assert got["files"][0]["path"] == "fix.py"
+                assert got["files"][0]["auto_extracted"] is True
+                assert got["files"][0]["content"] == "print('fixed')\n"
+            finally:
+                runner.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await runner
+                await harness.aclose()
+
+
+async def test_wait_more_hint_on_capped_done_wait() -> None:
+    async with live_hub() as hub:
+        mcp = build_mcp(hub.store, HubConfig(db_path=":memory:", default_identity="claude:test"))
+        async with Client(mcp) as claude:
+            hub.store.register_agent("slowpoke", kind="worker", node="n", backend="b", tags=[])
+            ack = (
+                await claude.call_tool(
+                    "submit_task",
+                    {"title": "t", "spec": "something long running", "assignee": "slowpoke"},
+                )
+            ).data
+            waited = (
+                await claude.call_tool(
+                    "wait_task", {"task_id": ack["task_id"], "wait_s": 1, "until": "done"}
+                )
+            ).data
+            assert waited["done"] is False
+            assert waited["wait_more"] is True
+
+
+def test_worker_advertises_tool_roster_tag() -> None:
+    """Registration tags carry tools:<granted> so specs never demand the impossible."""
+    from farmteam.agent.config import ToolsConfig as TC
+
+    cfg = AgentConfig(
+        name="x",
+        hub="http://h",
+        backend={"type": "cli", "command": ["true"], "model": "m"},
+        tools=TC(allow=["file_write", "shell"], file_root="/tmp/x"),
+    )
+    h = Harness(cfg, backend=MockBackend(lambda s, t: "ok"))
+    granted = "+".join(cfg.tools.allow)
+    assert h.tools.enabled
+    assert granted == "file_write+shell"
+
+
+async def test_dedupe_releases_after_failure_and_flags_duplicates() -> None:
+    async with live_hub() as hub:
+        mcp = build_mcp(hub.store, HubConfig(db_path=":memory:", default_identity="claude:test"))
+        async with Client(mcp) as claude:
+            hub.store.register_agent("dedup1", kind="worker", node="n", backend="b", tags=[])
+            hub.store.register_agent("dedup2", kind="worker", node="n", backend="b", tags=[])
+            first = (
+                await claude.call_tool(
+                    "submit_task",
+                    {
+                        "title": "verse",
+                        "spec": "write a limerick please",
+                        "assignee": "dedup1",
+                        "dedupe_key": "verse-1",
+                    },
+                )
+            ).data
+            # duplicate while live → same id, flagged
+            dup = (
+                await claude.call_tool(
+                    "submit_task",
+                    {
+                        "title": "verse",
+                        "spec": "write a limerick please",
+                        "assignee": "dedup1",
+                        "dedupe_key": "verse-1",
+                    },
+                )
+            ).data
+            assert dup["task_id"] == first["task_id"]
+            assert dup["deduped"] is True and "no new task" in dup["note"]
+            # fail it → key releases → resubmit creates a NEW task honoring new assignee
+            hub.store.claim_task(first["task_id"], "dedup1")
+            hub.store.fail_task(first["task_id"], "dedup1", "model exploded")
+            fresh = (
+                await claude.call_tool(
+                    "submit_task",
+                    {
+                        "title": "verse",
+                        "spec": "AABBA this time",
+                        "assignee": "dedup2",
+                        "dedupe_key": "verse-1",
+                    },
+                )
+            ).data
+            assert fresh["task_id"] != first["task_id"]
+            assert "deduped" not in fresh
+            assert fresh["task"]["assignee"] == "dedup2"
+
+
+async def test_revise_task_carries_history_and_feedback() -> None:
+    async with live_hub() as hub:
+        mcp = build_mcp(hub.store, HubConfig(db_path=":memory:", default_identity="claude:test"))
+        async with Client(mcp) as claude:
+            hub.store.register_agent("reviser", kind="worker", node="n", backend="b", tags=[])
+            t = hub.store.submit_task(
+                title="build parser",
+                spec="parse durations like 2h30m",
+                created_by="c",
+                assignee="reviser",
+                project="acme",
+            )
+            hub.store.claim_task(t.id, "reviser")
+            hub.store.complete_task(t.id, "reviser", {"text": "def parse(s): return 0"})
+            revised = (
+                await claude.call_tool(
+                    "revise_task",
+                    {"task_id": t.id, "feedback": "test_mixed fails: expected 150 got 0"},
+                )
+            ).data
+            assert revised["revises"] == t.id
+            new = hub.store.require_task(revised["task_id"])
+            assert "PRIOR ATTEMPT" in new.spec and "def parse" in new.spec
+            assert "expected 150 got 0" in new.spec
+            assert new.assignee == "reviser" and new.project == "acme"
+            # revising a live task is refused
+            live = hub.store.submit_task(
+                title="x", spec="another live task", created_by="c", assignee="reviser"
+            )
+            err = (
+                await claude.call_tool("revise_task", {"task_id": live.id, "feedback": "f"})
+            ).data
+            assert err["error"]["code"] == "conflict"
+
+
+async def test_bare_done_claim_is_flagged_no_output(tmp_path) -> None:
+    def respond(system, turns):
+        return "WROTE .gitignore"  # no fence, no tools, nothing
+
+    async with live_hub() as hub:
+        mcp = build_mcp(hub.store, HubConfig(db_path=":memory:", default_identity="claude:test"))
+        async with Client(mcp) as claude:
+            config = AgentConfig(
+                name="claimer",
+                hub=hub.url,
+                backend={"type": "cli", "command": ["true"], "model": "m"},
+                tools=ToolsConfig(
+                    allow=["file_write", "file_read"], file_root=str(tmp_path / "scratch")
+                ),
+            )
+            harness = Harness(config, backend=MockBackend(respond))
+            runner = asyncio.create_task(harness.run())
+            await wait_for(lambda: hub.store.bus.subscriber_count("claimer"))
+            try:
+                ack = (
+                    await claude.call_tool(
+                        "submit_task",
+                        {"title": "t", "spec": "write a gitignore file", "assignee": "claimer"},
+                    )
+                ).data
+                await wait_for(lambda: hub.store.require_task(ack["task_id"]).state == "completed")
+                res = (await claude.call_tool("task_result", {"task_id": ack["task_id"]})).data
+                assert res["result"]["no_output"] is True
+            finally:
+                runner.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await runner
+                await harness.aclose()
+
+
+async def test_malformed_tool_text_gets_one_corrective_retry(tmp_path) -> None:
+    state = {"round": 0}
+
+    def respond(system, turns):
+        state["round"] += 1
+        if state["round"] == 1:
+            # unparseable tool-shaped text (unquoted keys)
+            return 'I will call:\n```json\n{"name": "file_write", "arguments": {path: x}}\n```'
+        return ChatResult(
+            text="done",
+            tool_calls=[],
+            input_tokens=1,
+            output_tokens=1,
+        )
+
+    async with live_hub() as hub:
+        mcp = build_mcp(hub.store, HubConfig(db_path=":memory:", default_identity="claude:test"))
+        async with Client(mcp) as claude:
+            config = AgentConfig(
+                name="retryer",
+                hub=hub.url,
+                backend={"type": "cli", "command": ["true"], "model": "m"},
+                tools=ToolsConfig(
+                    allow=["file_write", "file_read"], file_root=str(tmp_path / "scratch")
+                ),
+            )
+            harness = Harness(config, backend=MockBackend(respond))
+            runner = asyncio.create_task(harness.run())
+            await wait_for(lambda: hub.store.bus.subscriber_count("retryer"))
+            try:
+                ack = (
+                    await claude.call_tool(
+                        "submit_task",
+                        {"title": "t", "spec": "write the x file now", "assignee": "retryer"},
+                    )
+                ).data
+                await wait_for(lambda: hub.store.require_task(ack["task_id"]).state.terminal)
+                task = hub.store.require_task(ack["task_id"])
+                # retry happened (2 model rounds) and the task did not hard-fail
+                assert state["round"] == 2
+                assert str(task.state) == "completed"
             finally:
                 runner.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):

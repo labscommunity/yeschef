@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     priority     INTEGER NOT NULL DEFAULT 0,
     timeout_s    REAL NOT NULL,
     dedupe_key   TEXT UNIQUE,
+    project      TEXT,
     room_id      TEXT REFERENCES rooms(id) ON DELETE SET NULL,
     progress_pct REAL,
     progress_msg TEXT,

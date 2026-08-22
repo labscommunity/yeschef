@@ -61,7 +61,8 @@ list_agents(kind="worker")         # the dispatchable roster and its tags
 submit_task(
   title="triage errors",
   spec="<paste the actual log lines here — the worker cannot read your files>",
-  assignee="fastball")            # or selector="tier:fast" to reach any fast agent
+  assignee="fastball",            # or selector="tier:fast" (unions work: "tier:fast|tier:build")
+  project="<this repo's name>")   # lets any later session find this project's tasks
 → {task_id: "task_ab12cd"}
 wait_task("task_ab12cd", until="done")   # one long-poll to completion (max 60s/call)
 task_result("task_ab12cd")         # the answer, once ready
@@ -85,8 +86,8 @@ one). For a group, `create_room(...)` then `post(...)`.
 tools or a CLI-agent backend) returns everything it creates. After it completes:
 
 ```
-task_files("task_ab12cd")            # manifest of produced files
-task_file("task_ab12cd", "index.html")   # fetch one; then Write it into the project
+task_files("task_ab12cd", include_content=True)  # every file + content, ONE call
+# then Write each into the project; task_file(id, path) exists for single fetches
 ```
 
 **4. Show the task in the subagent panel.** Right after `submit_task`, spawn the
@@ -122,6 +123,15 @@ the hub, so it cannot run forever.
 - **Adopt running work.** If you discover an in-flight task whose artifact the user
   wants, spawn the watcher for it (id + destination) instead of ending with "want me
   to check later?" — the done moment should never need another prompt.
+- **Watcher applies to observe tasks too.** Forensics or status asks don't change the
+  waiting rule: spawn the watcher, then reconstruct the timeline afterwards from
+  `task_status(verbose=True, event_limit=...)`. There is no setting that forbids
+  subagents — never invent one to justify inline polling.
+- **Check for uncollected work first.** `whoami` reports `uncollected_results` — a
+  crashed or rate-limited session may have finished work waiting; offer to land it
+  before re-dispatching anything from scratch. After a failed round, prefer
+  `revise_task(id, feedback)` over a fresh submit: the worker sees its prior attempt
+  and your exact feedback.
 - **Worker claims are claims.** `tool_log` in the result shows what actually ran; a
   worker that says "tests pass" with no shell in its log ran nothing. Check
   `code_in_text_only` and `truncated` flags before landing anything.
