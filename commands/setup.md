@@ -16,8 +16,8 @@ result briefly. Stop and show the error if a step fails.
    and uv or pipx) and stop.
 
 3. **Start the hub.** Run `farmteam up --detach`. This generates auth tokens, starts the
-   hub in the background, and wires the `farmteam` MCP server into Claude Code at user
-   scope. Capture the `farmteam join ...` command it prints — that is what each worker
+   hub in the background, and wires the `farmteam` MCP server into both Claude Code (HTTP MCP)
+   and Codex (a stdio bridge), whichever are installed. Capture the `farmteam join ...` command it prints — that is what each worker
    machine runs.
 
 4. **Verify.** Run `farmteam doctor` and confirm the hub is reachable. If a local model

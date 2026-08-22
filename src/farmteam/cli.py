@@ -129,6 +129,46 @@ def _wire_claude_code(mcp_url: str) -> None:
         )
 
 
+CODEX_MCP_BLOCK = """
+[mcp_servers.farmteam]
+command = "farmteam"
+args = ["mcp-proxy", "--hub", "{hub_url}"]
+"""
+
+
+def codex_config_with_farmteam(existing: str, hub_url: str) -> str | None:
+    """Return the Codex config.toml text with farmteam wired, or None if already there.
+
+    Codex speaks stdio MCP; the entry launches `farmteam mcp-proxy`, which bridges
+    stdio to the hub's HTTP endpoint. Append-only on purpose: rewriting a user's TOML
+    through a parser risks mangling comments and formatting they care about.
+    """
+    if "[mcp_servers.farmteam]" in existing:
+        return None
+    block = CODEX_MCP_BLOCK.format(hub_url=hub_url)
+    if existing and not existing.endswith("\n"):
+        existing += "\n"
+    return existing + block
+
+
+def _wire_codex(hub_url: str) -> None:
+    codex_home = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
+    config_path = codex_home / "config.toml"
+    if shutil.which("codex") is None and not codex_home.exists():
+        return  # no Codex on this machine; stay quiet
+    updated = codex_config_with_farmteam(
+        config_path.read_text() if config_path.exists() else "", hub_url
+    )
+    if updated is None:
+        console.print("[green]✓[/green] Codex already wired to [bold]farmteam[/bold]")
+        return
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(updated)
+    console.print(
+        f"[green]✓[/green] wired into Codex ({config_path}) via [bold]farmteam mcp-proxy[/bold]"
+    )
+
+
 def _serve_hub(host: str, port: int, db: str, cfg: settings.Settings) -> None:
     import uvicorn
 
@@ -177,6 +217,7 @@ def up(
     mcp_url = f"{cfg.hub_url}/mcp"
     if not no_wire:
         _wire_claude_code(mcp_url)
+        _wire_codex(cfg.hub_url)
 
     join = f"farmteam join --hub {cfg.advertise_url}"
     if cfg.register_token:
@@ -437,6 +478,17 @@ def doctor() -> None:
             "[dim]•[/dim] `claude` CLI not on PATH (only needed on the box you drive from)"
         )
 
+    codex_config = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser() / "config.toml"
+    if codex_config.exists():
+        wired = "[mcp_servers.farmteam]" in codex_config.read_text()
+        mark = ok if wired else "[dim]•[/dim]"
+        note = (
+            "wired via mcp-proxy"
+            if wired
+            else "present but not wired — run [cyan]farmteam up[/cyan]"
+        )
+        console.print(f"{mark} Codex {note}")
+
 
 # =============================================================== interaction
 
@@ -660,6 +712,28 @@ def replay_cmd(
             no_delay=no_delay,
         ),
     )
+
+
+@app.command("mcp-proxy")
+def mcp_proxy(hub: str = typer.Option(None, help="Hub URL (default: the configured one).")) -> None:
+    """Bridge stdio MCP to the hub, for clients that don't speak HTTP MCP (Codex, etc.).
+
+    Everything the hub's MCP surface offers — dispatch, status, files, dialogues —
+    flows through unchanged; this process is just the transport adapter.
+    """
+    # Banner and logs must not touch stdout — it IS the MCP channel for a stdio client.
+    import logging as _logging
+
+    _logging.disable(_logging.CRITICAL)
+    try:
+        from fastmcp.server import create_proxy
+    except ImportError:  # older fastmcp
+        from fastmcp import FastMCP
+
+        proxy = FastMCP.as_proxy(_mcp_url(hub), name="farmteam")
+    else:
+        proxy = create_proxy(_mcp_url(hub), name="farmteam")
+    proxy.run(show_banner=False)
 
 
 @app.command("stats")

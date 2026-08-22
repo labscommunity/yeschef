@@ -1,7 +1,7 @@
 # ⚾ farmteam
 
-**The farm team for Claude Code.** Local models on your own hardware that take the
-grunt work, talk to each other in bounded rooms, and never hit a rate limit.
+**The farm team for Claude Code and Codex.** Local models on your own hardware that
+take the grunt work, talk to each other in bounded rooms, and never hit a rate limit.
 
 You pay per token and wait out rate limits while the GPUs you already own sit idle.
 farmteam turns them into a roster Claude Code can actually manage: dispatch a task, keep
@@ -48,6 +48,10 @@ farmteam join --hub http://hub-host:8787 --token <printed-by-up>
 That's the whole setup. Single-box demo: run both on one machine — `join` needs no
 flags at all. `farmteam doctor` diagnoses anything that's off; `--detach`/`down`/`ps`
 run it all in the background from one terminal. macOS, Linux, and Windows.
+
+`farmteam up` wires **both Claude Code and Codex** if they're installed — Claude Code
+over HTTP MCP, Codex over a stdio bridge (`farmteam mcp-proxy`). Same tools, same hub,
+either client.
 
 **Or let Claude Code install it.** This repo is also a Claude Code plugin:
 
