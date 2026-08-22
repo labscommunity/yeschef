@@ -230,7 +230,7 @@ class Agent:
         dispatch can still spill onto idle capacity (`tier:fast|tier:build`).
         """
         return any(
-            part == self.name or part in self.tags
+            part == "*" or part == self.name or part in self.tags
             for part in (p.strip() for p in selector.split("|"))
             if part
         )
@@ -243,6 +243,7 @@ class Agent:
             "backend": self.backend,
             "tags": list(self.tags),
             "status": str(self.status(ref)),
+            "heartbeat_age_s": round((ref if ref is not None else now()) - self.last_seen, 1),
             "last_seen": self.last_seen,
             "created_at": self.created_at,
         }
@@ -318,6 +319,7 @@ class Task:
     dedupe_key: str | None = None
     project: str | None = None
     output_mode: str | None = None
+    data: str | None = None
     room_id: str | None = None
     progress_pct: float | None = None
     progress_msg: str | None = None
@@ -339,6 +341,7 @@ class Task:
             "selector": self.selector,
             "project": self.project,
             "output_mode": self.output_mode,
+            "data": self.data,
             "priority": self.priority,
             "timeout_s": self.timeout_s,
             "room_id": self.room_id,
@@ -384,7 +387,7 @@ class Task:
                 k
                 for k in (
                     "truncated",
-                    "no_output",
+                    "no_files",
                     "all_tools_failed",
                     "code_in_text_only",
                     "unverified_claims",

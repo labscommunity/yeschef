@@ -29,10 +29,13 @@ def test_submit_returns_queued_task_immediately(fleet: Store) -> None:
     assert task.id.startswith("task_")
 
 
-def test_submit_requires_a_target(fleet: Store) -> None:
-    with pytest.raises(HubError) as exc:
-        fleet.submit_task("no target", "spec", "claude:main")
-    assert exc.value.code == "invalid"
+def test_submit_without_target_routes_to_first_idle(store) -> None:
+    """Omitting assignee AND selector means 'whoever is idle' — the wildcard selector
+    routes to the first online worker instead of bouncing the submit."""
+    store.register_agent("anyone", kind="worker", node="n", backend="b", tags=[])
+    task = store.submit_task(title="t", spec="do it", created_by="c")
+    assert task.selector == "*"
+    assert store.next_task_for("anyone").id == task.id
 
 
 def test_dedupe_key_returns_the_same_task(fleet: Store) -> None:

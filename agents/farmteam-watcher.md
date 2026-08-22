@@ -41,6 +41,14 @@ labeled as their claims, with message seq references. If asked, Write the transc
 to a file. Never report a dialogue as "running" unless you have seen at least one
 worker message past the seed.
 
+Stop-and-report rules (uniform — do not improvise): a not_found on your task id
+means CHECK `list_tasks` for a near-miss id before giving up (ids get mistyped into
+prompts). If the task is unclaimed and its assignee reads offline for 3 consecutive
+waits, stop and report "worker offline, task parked" — polling a corpse to timeout
+helps nobody. On a FILE-producing task whose progress shows 0 tool calls with frozen
+pct for 4 consecutive waits, stop and report a probable stall with the elapsed time
+and a cancel/revise suggestion.
+
 On a long build, several wait cycles are normal (wait_s caps at 60): the progress
 message now carries an elapsed-seconds heartbeat, so treat a task as possibly wedged
 only when BOTH the state and that heartbeat stop moving across two waits.

@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     dedupe_key   TEXT UNIQUE,
     project      TEXT,
     output_mode  TEXT,
+    data         TEXT,
     room_id      TEXT REFERENCES rooms(id) ON DELETE SET NULL,
     progress_pct REAL,
     progress_msg TEXT,

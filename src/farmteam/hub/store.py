@@ -79,6 +79,9 @@ class Store:
         with _ctx.suppress(_sqlite3.OperationalError):
             self._db.execute("ALTER TABLE tasks ADD COLUMN output_mode TEXT")
             self._db.commit()
+        with _ctx.suppress(_sqlite3.OperationalError):
+            self._db.execute("ALTER TABLE tasks ADD COLUMN data TEXT")
+            self._db.commit()
         self._db.commit()
 
     def close(self) -> None:
@@ -695,9 +698,13 @@ class Store:
         dedupe_key: str | None = None,
         project: str | None = None,
         output_mode: str | None = None,
+        data: str | None = None,
     ) -> Task:
         if not assignee and not selector:
-            raise HubError(ErrorCode.INVALID, "assignee or selector required")
+            # "Whoever is idle": the natural routing intent — first online worker
+            # claims it. (Sessions were bounced and had to hand-build union selectors
+            # spanning the roster.)
+            selector = "*"
         if dedupe_key:
             with self._lock:
                 row = self._db.execute(
@@ -725,8 +732,8 @@ class Store:
             self._db.execute(
                 """INSERT INTO tasks (id, title, spec, created_by, state, assignee, selector,
                                       priority, timeout_s, dedupe_key, project,
-                                      output_mode, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                      output_mode, data, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     tid,
                     title,
@@ -740,6 +747,7 @@ class Store:
                     dedupe_key,
                     project,
                     output_mode,
+                    data,
                     ts,
                 ),
             )
@@ -1135,6 +1143,7 @@ class Store:
             dedupe_key=row["dedupe_key"],
             project=row["project"] if "project" in row.keys() else None,
             output_mode=row["output_mode"] if "output_mode" in row.keys() else None,
+            data=row["data"] if "data" in row.keys() else None,
             room_id=row["room_id"],
             progress_pct=row["progress_pct"],
             progress_msg=row["progress_msg"],
@@ -1367,8 +1376,19 @@ class Store:
             # to an offline agent sits in `queued` forever and the requester is never told.
             started = task.claimed_at if task.claimed_at is not None else task.created_at
             if ref - started > task.timeout_s:
+                if task.claimed_at is None:
+                    # Never claimed: the assignee was offline or no worker matched —
+                    # a bare 'timeout' read as a slow run and hid the real cause.
+                    cause = (
+                        f"assignee {task.assignee} never came online"
+                        if task.assignee
+                        else f"no online worker matched selector {task.selector!r}"
+                    )
+                    err = f"unclaimed for {int(ref - started)}s — {cause}"
+                else:
+                    err = "timeout"
                 with contextlib.suppress(HubError):
-                    self._finish(task.id, TaskState.FAILED, error="timeout")
+                    self._finish(task.id, TaskState.FAILED, error=err)
                     stats["timed_out"] += 1
                 continue
             if task.state in (TaskState.QUEUED, TaskState.INPUT_REQUIRED):
