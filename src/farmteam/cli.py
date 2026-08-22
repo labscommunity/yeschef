@@ -48,6 +48,20 @@ console = Console()
 
 OPERATOR_IDENTITY = f"operator:{getpass.getuser()}"
 
+PROVIDER_PRESETS = {
+    "openrouter": {"base_url": "https://openrouter.ai/api/v1", "key_env": "OPENROUTER_API_KEY"},
+    "openai": {"base_url": "https://api.openai.com/v1", "key_env": "OPENAI_API_KEY"},
+    "groq": {"base_url": "https://api.groq.com/openai/v1", "key_env": "GROQ_API_KEY"},
+    "together": {"base_url": "https://api.together.xyz/v1", "key_env": "TOGETHER_API_KEY"},
+    "deepseek": {"base_url": "https://api.deepseek.com/v1", "key_env": "DEEPSEEK_API_KEY"},
+    "fireworks": {
+        "base_url": "https://api.fireworks.ai/inference/v1",
+        "key_env": "FIREWORKS_API_KEY",
+    },
+}
+"""Cloud providers that speak the OpenAI-compatible API. Any other one works via
+--base-url + --api-key-env; these are just the presets."""
+
 
 # --------------------------------------------------------------- shared plumbing
 
@@ -306,6 +320,14 @@ def join(
     name: str = typer.Option(None, help="Agent name (default: this machine's hostname)."),
     model: str = typer.Option(None, help="Model to serve (default: auto-detected)."),
     base_url: str = typer.Option(None, help="Model API base (default: auto-detected)."),
+    provider: str = typer.Option(
+        None,
+        help="Cloud provider preset that fills base_url and the key env var: "
+        "openrouter | openai | groq | together | deepseek | fireworks.",
+    ),
+    api_key_env: str = typer.Option(
+        None, help="Env var holding the API key (for a cloud provider or a secured endpoint)."
+    ),
     backend: str = typer.Option(
         "openai_compat", help="Backend adapter: openai_compat | anthropic_compat | tahoma."
     ),
@@ -314,21 +336,45 @@ def join(
     detach: bool = typer.Option(False, "--detach", "-d", help="Run in the background and return."),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
-    """Bring a worker online: detect the local model, verify it, and register."""
+    """Bring a worker online — from a local model server or a cloud provider.
+
+    Local is the default (auto-detected). For a cloud provider, pass --provider (which
+    sets base_url and the key env var for you) and --model, e.g.:
+
+        farmteam join --provider openrouter --model meta-llama/llama-3.3-70b-instruct
+    """
     cfg = settings.load()
     hub = hub or cfg.hub_url
     token = token or cfg.register_token
     name = name or socket.gethostname().split(".")[0]
 
     runtime: str | None = None
-    if not base_url:
+    if provider:
+        preset = PROVIDER_PRESETS.get(provider.lower())
+        if preset is None:
+            console.print(
+                f"[red]unknown provider '{provider}'[/red]. "
+                f"Known: {', '.join(sorted(PROVIDER_PRESETS))}."
+            )
+            raise typer.Exit(1)
+        base_url = base_url or preset["base_url"]
+        api_key_env = api_key_env or preset["key_env"]
+        runtime = provider.lower()
+        if not os.environ.get(api_key_env):
+            console.print(
+                f"[red]{api_key_env} is not set.[/red] Export your {provider} API key first:\n"
+                f"  [cyan]export {api_key_env}=...[/cyan]"
+            )
+            raise typer.Exit(1)
+        console.print(f"[green]✓[/green] using [bold]{provider}[/bold] at {base_url}")
+    elif not base_url:
         console.print("probing for a local model server…")
         detected = autodetect()
         if detected is None:
             console.print(
                 "[red]no local model server found[/red] on the usual ports (Ollama 11434, "
-                "vLLM 8000, LM Studio 1234).\nStart one, or pass [cyan]--base-url[/cyan] and "
-                "[cyan]--model[/cyan] to point at it."
+                "vLLM 8000, LM Studio 1234).\nStart one, pass [cyan]--base-url[/cyan] + "
+                "[cyan]--model[/cyan], or use a cloud provider with [cyan]--provider[/cyan]."
             )
             raise typer.Exit(1)
         base_url = detected.base_url
@@ -346,6 +392,18 @@ def join(
     backend_cfg = {"type": backend, "base_url": base_url, "model": model}
     if runtime and runtime != "openai_compat":
         backend_cfg["runtime"] = runtime
+    if api_key_env:
+        key = os.environ.get(api_key_env)
+        if not key:
+            console.print(f"[red]{api_key_env} is not set[/red] on this machine.")
+            raise typer.Exit(1)
+        backend_cfg["api_key"] = key
+        if provider and provider.lower() == "openrouter":
+            # Optional attribution headers OpenRouter uses for its rankings; harmless.
+            backend_cfg["extra_headers"] = {
+                "HTTP-Referer": "https://github.com/labscommunity/farmteam",
+                "X-Title": "farmteam",
+            }
     console.print("verifying the model answers…")
     ok, message = asyncio.run(preflight(backend_cfg))
     if not ok:
@@ -391,6 +449,10 @@ def join(
         ]
         if runtime:
             command += ["--runtime", runtime]
+        if api_key_env:
+            command += ["--api-key-env", api_key_env]
+        if provider:
+            command += ["--provider", provider]
         for extra in tags:
             command += ["--tag", extra]
         if token:
@@ -902,12 +964,21 @@ def _run_detached_worker(
     backend: str = typer.Option("openai_compat"),
     runtime: str = typer.Option(None),
     token: str = typer.Option(None),
+    api_key_env: str = typer.Option(None),
+    provider: str = typer.Option(None),
     tag: list[str] = typer.Option(None, "--tag"),
 ) -> None:
     """Internal entry point used by `join --detach`."""
     backend_cfg = {"type": backend, "base_url": base_url, "model": model}
     if runtime:
         backend_cfg["runtime"] = runtime
+    if api_key_env:
+        backend_cfg["api_key"] = os.environ.get(api_key_env)
+    if provider and provider.lower() == "openrouter":
+        backend_cfg["extra_headers"] = {
+            "HTTP-Referer": "https://github.com/labscommunity/farmteam",
+            "X-Title": "farmteam",
+        }
     _run_worker(
         AgentConfig(
             name=name,

@@ -150,6 +150,19 @@ or **opt-in tools**: shell (pattern-allowlisted, metacharacter-screened), file a
 the worker, never the hub. Anything embedding the Python SDK (`farmteam.sdk.AgentClient`)
 is a first-class agent too.
 
+**Cloud workers, too.** A worker is just an OpenAI- or Anthropic-compatible client, so a
+hosted provider works exactly like a local one — `farmteam join` has presets:
+
+```bash
+export OPENROUTER_API_KEY=sk-or-...
+farmteam join --provider openrouter --model meta-llama/llama-3.3-70b-instruct --tier fast
+```
+
+Presets: `openrouter`, `openai`, `groq`, `together`, `deepseek`, `fireworks`; any other
+endpoint works with `--base-url` + `--api-key-env`. Mix cloud and local on one hub and
+dispatch by tag — route bulk grunt work to a cheap cloud model, keep the private work on
+your own machines.
+
 ## Honesty ledger
 
 What this is, and isn't:
@@ -159,6 +172,9 @@ What this is, and isn't:
   second opinions), not on deep reasoning. That's why the design keeps Claude in charge.
 - **Total cost isn't $0.** It's your electricity and your hardware. What it isn't is
   metered, throttled, or revocable.
+- **A cloud worker (OpenRouter etc.) is the opposite trade** — metered, and your data
+  leaves your network. It's supported and useful (cheap bulk work, models you can't run
+  locally), but it's not the "own your hardware" default. Choose per worker.
 - **No TLS termination** — the hub is designed for LAN/Tailscale (which encrypts
   transport). Never expose it through a public funnel or port-forward.
 - **Dialogues are real model output, not magic.** Small models sometimes say dull

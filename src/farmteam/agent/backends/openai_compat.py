@@ -20,6 +20,7 @@ class OpenAICompatBackend:
         api_key: str | None = None,
         timeout: float = 600.0,
         extra_body: dict | None = None,
+        extra_headers: dict | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -27,6 +28,7 @@ class OpenAICompatBackend:
         headers = {"Content-Type": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
+        headers.update(extra_headers or {})  # e.g. OpenRouter's HTTP-Referer / X-Title
         self._http = httpx.AsyncClient(headers=headers, timeout=timeout)
 
     async def close(self) -> None:

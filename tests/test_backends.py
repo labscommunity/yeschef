@@ -296,3 +296,31 @@ async def test_build_backend_selects_the_adapter() -> None:
 async def test_build_backend_rejects_an_unknown_type() -> None:
     with pytest.raises(ValueError, match="unknown backend type"):
         build_backend({"type": "telepathy", "base_url": "x", "model": "y"})
+
+
+async def test_extra_headers_reach_the_provider() -> None:
+    """OpenRouter-style attribution headers (and any custom header) must be sent."""
+    backend = OpenAICompatBackend(
+        "https://openrouter.ai/api/v1",
+        "meta-llama/llama-3.3-70b-instruct",
+        api_key="sk-or-test",
+        extra_headers={"HTTP-Referer": "https://example.com", "X-Title": "farmteam"},
+    )
+    assert backend._http.headers["authorization"] == "Bearer sk-or-test"
+    assert backend._http.headers["http-referer"] == "https://example.com"
+    assert backend._http.headers["x-title"] == "farmteam"
+    await backend.close()
+
+
+async def test_build_backend_threads_extra_headers() -> None:
+    backend = build_backend(
+        {
+            "type": "openai_compat",
+            "base_url": "https://openrouter.ai/api/v1",
+            "model": "m",
+            "api_key": "k",
+            "extra_headers": {"X-Title": "farmteam"},
+        }
+    )
+    assert backend._http.headers["x-title"] == "farmteam"
+    await backend.close()

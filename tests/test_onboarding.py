@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from farmteam import settings
@@ -81,3 +83,30 @@ def test_pick_model_without_a_list_keeps_the_preference() -> None:
     backend = DetectedBackend(runtime="vllm", base_url="http://x/v1", models=[])
     assert backend.pick_model("only-choice") == "only-choice"
     assert backend.pick_model(None) is None
+
+
+def test_provider_presets_cover_the_common_clouds() -> None:
+    from farmteam.cli import PROVIDER_PRESETS
+
+    assert PROVIDER_PRESETS["openrouter"]["base_url"] == "https://openrouter.ai/api/v1"
+    assert PROVIDER_PRESETS["openrouter"]["key_env"] == "OPENROUTER_API_KEY"
+    # Every preset names a base_url and a key env var.
+    for name, preset in PROVIDER_PRESETS.items():
+        assert preset["base_url"].startswith("https://"), name
+        assert preset["key_env"].endswith("_API_KEY"), name
+
+
+def test_openrouter_example_config_reads_key_from_env(monkeypatch) -> None:
+    """The example uses api_key_env so the key never lands in the file."""
+    from pathlib import Path
+
+    from farmteam.agent import AgentConfig
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-secret")
+    root = Path(__file__).resolve().parent.parent
+    cfg = AgentConfig.load(root / "examples" / "agents" / "openrouter-worker.toml")
+    assert cfg.backend["api_key"] == "sk-or-secret"
+    assert cfg.backend["base_url"] == "https://openrouter.ai/api/v1"
+    raw = (root / "examples" / "agents" / "openrouter-worker.toml").read_text()
+    # No `api_key = "..."` assignment (a key literal); only `api_key_env` is used.
+    assert not re.search(r'^\s*api_key\s*=', raw, re.MULTILINE)

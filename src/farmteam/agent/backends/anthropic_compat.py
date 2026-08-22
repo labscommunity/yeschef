@@ -23,6 +23,7 @@ class AnthropicCompatBackend:
         api_key: str | None = None,
         timeout: float = 600.0,
         extra_body: dict | None = None,
+        extra_headers: dict | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -30,6 +31,7 @@ class AnthropicCompatBackend:
         headers = {"Content-Type": "application/json", "anthropic-version": "2023-06-01"}
         if api_key:
             headers["x-api-key"] = api_key
+        headers.update(extra_headers or {})
         self._http = httpx.AsyncClient(headers=headers, timeout=timeout)
 
     async def close(self) -> None:

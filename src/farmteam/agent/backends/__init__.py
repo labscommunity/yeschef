@@ -28,6 +28,7 @@ def build_backend(config: dict) -> Backend:
         "api_key": config.get("api_key"),
         "timeout": float(config.get("timeout_s", 600.0)),
         "extra_body": config.get("extra_body") or {},
+        "extra_headers": config.get("extra_headers") or {},
     }
     if kind == "anthropic_compat":
         return AnthropicCompatBackend(**common)

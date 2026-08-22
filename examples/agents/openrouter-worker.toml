@@ -1,0 +1,42 @@
+# A worker backed by a cloud provider (OpenRouter) instead of local hardware.
+#
+# farmteam workers are OpenAI-compatible HTTP clients, so any hosted provider works:
+# set base_url, and read the key from the environment so it never lands in the file.
+#
+#   export OPENROUTER_API_KEY=sk-or-...
+#   farmteam agent run -c examples/agents/openrouter-worker.toml
+#
+# Or skip the file entirely — `join` has a preset:
+#   farmteam join --provider openrouter --model meta-llama/llama-3.3-70b-instruct --tier fast
+#
+# Mixing cloud and local workers on one hub is fine and often the point: route bulk
+# grunt work to a cheap cloud model, keep the private work on your own machines. Note
+# the honesty ledger — a cloud worker is metered and your data leaves your network,
+# the opposite of the local default.
+
+name = "router"
+hub = "http://hub-host:8787"
+tags = ["tier:fast", "cloud:openrouter"]
+
+[backend]
+type = "openai_compat"
+base_url = "https://openrouter.ai/api/v1"
+model = "meta-llama/llama-3.3-70b-instruct"
+api_key_env = "OPENROUTER_API_KEY"      # read from the environment, never inlined
+timeout_s = 120
+
+# Optional: OpenRouter uses these for its app-attribution rankings. Harmless to omit.
+[backend.extra_headers]
+"HTTP-Referer" = "https://github.com/labscommunity/farmteam"
+"X-Title" = "farmteam"
+
+[persona]
+system_prompt = """
+You are router, a cloud-backed agent on the farm team. You handle bulk grunt work —
+summarization, classification, extraction — quickly and cheaply. Be concise.
+"""
+reply_when = "mentioned"
+
+[runtime]
+max_tokens = 2048
+max_concurrent_tasks = 4        # cloud APIs parallelize well; local GPUs usually don't
