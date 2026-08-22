@@ -1416,8 +1416,76 @@ async def test_duplicate_restatement_archives_early() -> None:
         room = hub.store.create_room(
             "d", "claude:test", participants=["dw"], policy=RoomPolicy(max_messages=20)
         )
-        same = "This is my substantive position on the matter, which I will now proceed to repeat verbatim forever and ever."
+        same = (
+            "This is my substantive position on the matter, which I will now "
+            "proceed to repeat verbatim forever and ever and ever."
+        )
         hub.store.post_message(room.id, "dw", same)
         hub.store.post_message(room.id, "dw", "an intervening different point entirely here")
         hub.store.post_message(room.id, "dw", same)  # seq matches seq-2, same sender
         assert hub.store.require_room(room.id).archived_reason == "degenerate: duplicate turns"
+
+
+# ------------------------------------------------------------- cycle 11 locks
+
+
+def test_lifetime_stats_separate_tail_and_token_provenance() -> None:
+    import asyncio as _a
+
+    async def _run():
+        async with live_hub() as hub:
+            hub.store.register_agent("acct", kind="worker", node="n", backend="b", tags=[])
+            ok = hub.store.submit_task(title="ok", spec="s", created_by="c", assignee="acct")
+            hub.store.claim_task(ok.id, "acct")
+            hub.store.complete_task(ok.id, "acct", {"text": "done", "tokens": 500})
+            bad = hub.store.submit_task(title="bad", spec="s", created_by="c", assignee="acct")
+            hub.store.claim_task(bad.id, "acct")
+            hub.store.fail_task(bad.id, "acct", "boom", result={"tokens": 40})
+            st = hub.store.lifetime_stats()
+            assert st["tasks_completed"] == 1
+            assert st["tasks_failed_cancelled"] == 1
+            assert st["task_tokens"] == 500  # failed task's tokens NOT in the headline
+            assert st["room_tokens"] == 0
+            line = hub.store.format_stats(st)
+            assert "failed/cancelled" in line  # tail shown, not hidden
+            assert "kept local" not in line  # no dollar-implying phrasing
+
+    _a.run(_run())
+
+
+async def test_list_tasks_counts_only_is_compact() -> None:
+    async with live_hub() as hub:
+        mcp = build_mcp(hub.store, HubConfig(db_path=":memory:", default_identity="claude:test"))
+        async with Client(mcp) as claude:
+            hub.store.register_agent("cw2", kind="worker", node="n", backend="b", tags=[])
+            for _ in range(5):
+                hub.store.submit_task(title="t", spec="x", created_by="c", assignee="cw2")
+            res = (await claude.call_tool("list_tasks", {"counts_only": True})).data
+            assert "tasks" not in res
+            assert res["counts"]["total"] == 5
+            assert res["counts"]["by_state"]["queued"] == 5
+
+
+async def test_fleet_stats_carries_caveat_and_per_worker() -> None:
+    async with live_hub() as hub:
+        mcp = build_mcp(hub.store, HubConfig(db_path=":memory:", default_identity="claude:test"))
+        async with Client(mcp) as claude:
+            hub.store.register_agent("fw", kind="worker", node="n", backend="b", tags=[])
+            t = hub.store.submit_task(title="t", spec="x", created_by="c", assignee="fw")
+            hub.store.claim_task(t.id, "fw")
+            hub.store.complete_task(t.id, "fw", {"text": "done", "tokens": 100})
+            st = (await claude.call_tool("fleet_stats", {})).data
+            assert "not saved Claude tokens" in st["caveat"]
+            assert any(w["name"] == "fw" and w["success_rate"] == 1.0 for w in st["by_worker"])
+
+
+def test_multi_file_text_extraction() -> None:
+    from farmteam.agent.harness import _extract_pathed_blocks
+
+    text = (
+        "Here are the files:\n"
+        "```html path=index.html\n<h1>hi</h1>\n```\n"
+        "```css path=css/site.css\nbody{}\n```"
+    )
+    blocks = _extract_pathed_blocks(text)
+    assert blocks == [("index.html", "<h1>hi</h1>\n"), ("css/site.css", "body{}\n")]

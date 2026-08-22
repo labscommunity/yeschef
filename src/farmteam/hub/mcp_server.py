@@ -165,6 +165,28 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
 
     @mcp.tool
     @_guard
+    def fleet_stats() -> dict:
+        """Honest lifetime accounting for the farm — for answering "prove the savings".
+
+        Separates completed from failed/cancelled worker-time, and task tokens (the
+        work) from room tokens (inter-agent debate). IMPORTANT for reporting: local
+        tokens are NOT saved Claude tokens one-for-one — local models are weaker and
+        their output needs verification, so present this as compute-run-locally, never
+        as a dollar figure, and always show the failed tail alongside the completed
+        count.
+        """
+        st = store.lifetime_stats()
+        st["caveat"] = (
+            "local tokens are compute run on your hardware, not saved Claude tokens "
+            "1:1; weigh the failed/cancelled tail and verification overhead before "
+            "quoting any savings — a defensible estimate is a range with stated "
+            "assumptions, never a single number."
+        )
+        st["by_worker"] = store.worker_stats()
+        return st
+
+    @mcp.tool
+    @_guard
     def dismiss_results(task_ids: list[str] | None = None, dismiss_all: bool = False) -> dict:
         """Acknowledge uncollected task results so they stop appearing in whoami.
 
@@ -630,13 +652,20 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
         mine_only: bool = False,
         project: str | None = None,
         limit: int = 50,
+        counts_only: bool = False,
     ) -> dict:
         """List tasks, filtered by state, agent, project, or this session's own.
+
+        counts_only=True returns just aggregate counts by state and assignee (no task
+        bodies) — use it for audits and surveys instead of over-fetching the whole
+        history, which can exceed the response size cap.
 
         Note: mine_only filters by this session's hub identity, which may differ from
         the identity an earlier session used — prefer project= for cross-session
         recovery of a project's tasks.
         """
+        if counts_only:
+            return {"counts": store.task_counts(project=project)}
         if state == "running":
             state = "working"
         if state and state not in [str(v) for v in TaskState]:

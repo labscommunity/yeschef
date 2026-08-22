@@ -808,13 +808,31 @@ def stats(hub: str = typer.Option(None)) -> None:
         raise typer.Exit(1) from exc
     lifetime = health.get("lifetime", {})
     hours = lifetime.get("work_seconds", 0) / 3600.0
+    fail_hours = lifetime.get("work_seconds_failed", 0) / 3600.0
+    submitted = lifetime.get("tasks_submitted", 0)
+    completed = lifetime.get("tasks_completed", 0)
+    tail = lifetime.get("tasks_failed_cancelled", 0)
     table = Table(show_header=False, box=None)
-    table.add_row("tasks completed", f"[bold]{lifetime.get('tasks_completed', 0)}[/bold]")
-    table.add_row("tokens kept local", f"[bold]{lifetime.get('local_tokens', 0):,}[/bold]")
-    table.add_row("messages exchanged", f"[bold]{lifetime.get('messages', 0):,}[/bold]")
-    table.add_row("work run on your hardware", f"[bold]{hours:.1f}h[/bold]")
+    table.add_row("tasks completed", f"[bold]{completed}[/bold]")
+    if submitted:
+        rate = 100 * completed / submitted
+        table.add_row("of submitted", f"{completed}/{submitted} ({rate:.0f}%)")
+    if tail:
+        table.add_row(
+            "[dim]failed / cancelled[/dim]",
+            f"[dim]{tail} · {fail_hours:.1f}h of local compute[/dim]",
+        )
+    table.add_row("tokens generated locally", f"[bold]{lifetime.get('task_tokens', 0):,}[/bold]")
+    if lifetime.get("room_tokens"):
+        table.add_row("[dim]+ agent debate tokens[/dim]", f"[dim]{lifetime['room_tokens']:,}[/dim]")
+    table.add_row("local compute", f"[bold]{hours:.1f}h[/bold] (completed tasks)")
     table.add_row("fleet", f"{health.get('online', 0)}/{health.get('agents', 0)} agents online")
     console.print(table)
+    console.print(
+        "[dim]Note: locally-generated tokens are not saved Claude tokens one-for-one — "
+        "local models are weaker and their output usually needs review. This is compute "
+        "run on your hardware, not a dollar figure.[/dim]"
+    )
 
 
 @app.command("tasks")

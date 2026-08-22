@@ -548,8 +548,13 @@ class Harness:
                             self.config.name,
                         )
                         self._prefer_text_mode = True
+                    pathed = _extract_pathed_blocks(text)
                     extracted = _extract_lone_code_block(text, task.get("spec") or "")
-                    if extracted and workspace is not None:
+                    if pathed and workspace is not None:
+                        for name, body in pathed:
+                            (workspace / name).parent.mkdir(parents=True, exist_ok=True)
+                            (workspace / name).write_text(body)
+                    elif extracted and workspace is not None:
                         name, body = extracted
                         (workspace / name).write_text(body)
                         files = await self._collect_workspace(task_id, workspace)
@@ -840,6 +845,16 @@ EXT_BY_LANG = {
     "markdown": "md",
     "md": "md",
 }
+
+
+def _extract_pathed_blocks(text: str) -> list[tuple[str, str]]:
+    """Fenced blocks tagged with a path, e.g. ```html path=index.html — the multi-file
+    shape text mode needs so a two-file build survives a broken tool loop."""
+    out = []
+    for m in re.finditer(r"```[a-zA-Z]*\s+path=([\w./-]+)\n(.*?)```", text, re.DOTALL):
+        name, body = m.group(1).removeprefix("./"), m.group(2)
+        out.append((name, body if body.endswith("\n") else body + "\n"))
+    return out
 
 
 def _extract_lone_code_block(text: str, spec_hint: str = "") -> tuple[str, str] | None:

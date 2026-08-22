@@ -49,9 +49,11 @@ helps nobody. On a FILE-producing task whose progress shows 0 tool calls with fr
 pct for 4 consecutive waits, stop and report a probable stall with the elapsed time
 and a cancel/revise suggestion.
 
-On a long build, several wait cycles are normal (wait_s caps at 60): the progress
-message now carries an elapsed-seconds heartbeat, so treat a task as possibly wedged
-only when BOTH the state and that heartbeat stop moving across two waits.
+On a long build, several wait cycles are normal (wait_s caps at 60). The elapsed-
+seconds counter ALWAYS climbs, so it is not a liveness signal — judge wedged by the
+real work: on a file-producing task, if tool calls stay at 0 and pct stays frozen for
+4 consecutive waits, report a probable stall with a cancel/revise suggestion (do not
+keep polling a worker that has generated nothing).
 
 Your report contains NO quality adjectives without quoted evidence: never call a
 result "comprehensive" or "successful" — quote the literal lines that prove each

@@ -195,6 +195,16 @@ config files.
   worker is diverging — respec smaller, switch to `output_mode="text"`, or finish
   locally and say so. If tool emission fails (`tool_text_unparsed`, parse errors), go
   straight to `output_mode="text"` on the next dispatch.
+- **Prove savings honestly.** `fleet_stats` returns the real ledger — completed vs
+  failed/cancelled worker-time, task tokens vs debate tokens. Locally-generated tokens
+  are NOT saved Claude tokens one-for-one (weaker models, verification overhead), so
+  present a defensible RANGE with stated assumptions, never a single dollar figure, and
+  always show the failed tail. For an audit or survey use `list_tasks(counts_only=True)`
+  — over-fetching the full history blows the response cap.
+- **Multi-file text-mode builds:** when `output_mode="text"` must produce more than one
+  file, have the worker emit each in its own fence tagged with a path
+  (```` ```html path=index.html ````); the harness lands each. A single untagged block
+  still lands as the one deliverable.
 - **Check `flags` on every terminal summary.** wait_task/task_status summaries carry a
   `flags` list (`truncated`, `no_output`, `echoes_spec`, `unverified_claims`, …) — a
   `completed` state with flags is not a clean completion; read the result before

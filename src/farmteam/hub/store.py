@@ -1249,6 +1249,51 @@ class Store:
             n += 1
         return n
 
+    def task_counts(self, project: str | None = None) -> dict:
+        """Aggregate counts by state and by assignee — a survey without task bodies."""
+        where, args = "", []
+        if project:
+            where, args = " WHERE project = ?", [project]
+        with self._lock:
+            by_state = self._db.execute(
+                f"SELECT state, COUNT(*) AS n FROM tasks{where} GROUP BY state", args
+            ).fetchall()
+            by_assignee = self._db.execute(
+                f"SELECT assignee, COUNT(*) AS n FROM tasks{where} GROUP BY assignee",
+                args,
+            ).fetchall()
+        return {
+            "total": sum(r["n"] for r in by_state),
+            "by_state": {r["state"]: r["n"] for r in by_state},
+            "by_assignee": {r["assignee"] or "(none)": r["n"] for r in by_assignee},
+        }
+
+    def worker_stats(self) -> list[dict]:
+        """Per-worker throughput and success rate from the durable record."""
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT assignee AS name,
+                          COUNT(*) AS total,
+                          SUM(state = 'completed') AS completed,
+                          SUM(state IN ('failed', 'cancelled')) AS failed,
+                          COALESCE(SUM(CASE WHEN state = 'completed'
+                                       THEN finished_at - claimed_at END), 0) AS work_s
+                     FROM tasks
+                    WHERE assignee IS NOT NULL AND claimed_at IS NOT NULL
+                    GROUP BY assignee""",
+            ).fetchall()
+        return [
+            {
+                "name": r["name"],
+                "total": r["total"],
+                "completed": r["completed"],
+                "failed": r["failed"],
+                "success_rate": round(r["completed"] / r["total"], 3) if r["total"] else None,
+                "work_seconds": round(r["work_s"], 1),
+            }
+            for r in rows
+        ]
+
     def active_task_counts(self) -> dict[str, int]:
         """Live tasks per assignee, so the roster can show busy/idle directly."""
         with self._lock:
@@ -1270,39 +1315,70 @@ class Store:
         Derived on demand from tasks/rooms rather than kept as a counter, so it can
         never drift from the truth and needs no migration.
         """
+        done = str(TaskState.COMPLETED)
         with self._lock:
             tasks_row = self._db.execute(
                 """SELECT COUNT(*) AS done,
                           COALESCE(SUM(finished_at - claimed_at), 0) AS work_s
                      FROM tasks WHERE state = ? AND claimed_at IS NOT NULL""",
-                (str(TaskState.COMPLETED),),
+                (done,),
             ).fetchone()
-            token_row = self._db.execute(
-                "SELECT COALESCE(SUM(total_tokens), 0) AS tokens, "
-                "COALESCE(SUM(message_count), 0) AS messages FROM rooms"
+            # The failed/cancelled tail is real worker-time too — hiding it would let
+            # the headline oversell. Report it beside the completed hours.
+            tail_row = self._db.execute(
+                """SELECT COUNT(*) AS n,
+                          COALESCE(SUM(finished_at - claimed_at), 0) AS work_s
+                     FROM tasks
+                    WHERE state IN (?, ?) AND claimed_at IS NOT NULL""",
+                (str(TaskState.FAILED), str(TaskState.CANCELLED)),
             ).fetchone()
+            submitted = self._db.execute("SELECT COUNT(*) AS n FROM tasks").fetchone()["n"]
             task_tokens = self._db.execute(
                 """SELECT COALESCE(SUM(COALESCE(json_extract(result_json, '$.tokens'), 0)), 0)
                           AS tokens
                      FROM tasks WHERE state = ?""",
-                (str(TaskState.COMPLETED),),
+                (done,),
+            ).fetchone()["tokens"]
+            room_row = self._db.execute(
+                "SELECT COALESCE(SUM(total_tokens), 0) AS tokens, "
+                "COALESCE(SUM(message_count), 0) AS messages FROM rooms"
             ).fetchone()
         return {
+            "tasks_submitted": submitted,
             "tasks_completed": tasks_row["done"],
+            "tasks_failed_cancelled": tail_row["n"],
             "work_seconds": round(tasks_row["work_s"], 1),
-            "local_tokens": token_row["tokens"] + task_tokens["tokens"],
-            "messages": token_row["messages"],
+            "work_seconds_failed": round(tail_row["work_s"], 1),
+            # Task tokens are the work; room tokens are inter-worker debate chatter.
+            # Kept separate so "kept local" can't quietly absorb the debates.
+            "task_tokens": task_tokens,
+            "room_tokens": room_row["tokens"],
+            "local_tokens": task_tokens + room_row["tokens"],
+            "messages": room_row["messages"],
         }
 
     @staticmethod
     def format_stats(stats: dict) -> str:
-        """One compact human line, e.g. for tool-response footers."""
-        hours = stats["work_seconds"] / 3600.0
-        clock = f"{hours:.1f}h" if hours >= 1 else f"{stats['work_seconds'] / 60.0:.0f}m"
-        return (
-            f"farm team lifetime: {stats['tasks_completed']} tasks · "
-            f"~{stats['local_tokens']:,} tokens kept local · {clock} of work on your hardware"
+        """One compact human line, e.g. for tool-response footers.
+
+        Deliberately NOT phrased as dollar savings: local tokens are not saved Claude
+        tokens one-for-one (local models are weaker and need verification), so the line
+        states what happened — work run locally — and shows the failed tail rather than
+        a single rosy number a CFO could misread.
+        """
+
+        def clock(sec: float) -> str:
+            return f"{sec / 3600.0:.1f}h" if sec >= 3600 else f"{sec / 60.0:.0f}m"
+
+        line = (
+            f"farm team lifetime: {stats['tasks_completed']} tasks completed · "
+            f"~{stats['task_tokens']:,} tokens generated locally · "
+            f"{clock(stats['work_seconds'])} of local compute"
         )
+        tail = stats.get("tasks_failed_cancelled") or 0
+        if tail:
+            line += f" (+{tail} failed/cancelled, {clock(stats['work_seconds_failed'])} more)"
+        return line
 
     # -------------------------------------------------------------- artifacts
 
