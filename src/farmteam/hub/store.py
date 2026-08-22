@@ -1128,6 +1128,24 @@ class Store:
     def unretrieved_results(self, project: str | None = None) -> int:
         return len(self._unretrieved_rows(project))
 
+    def mark_collected(self, task) -> None:
+        """Fetching a result counts as collecting it — the requester has seen the
+        work; its files stay fetchable but stop reading as orphaned."""
+        ids = [
+            f["artifact_id"]
+            for f in (task.result or {}).get("files") or []
+            if "artifact_id" in f
+        ]
+        if not ids:
+            return
+        with self._lock:
+            self._db.execute(
+                f"UPDATE artifacts SET fetched_at = COALESCE(fetched_at, ?) "
+                f"WHERE id IN ({','.join('?' * len(ids))})",
+                [now(), *ids],
+            )
+            self._db.commit()
+
     def dismiss_results(self, task_ids: list[str] | None = None, dismiss_all: bool = False) -> int:
         """Mark uncollected results' artifacts fetched without pulling them."""
         targets = (

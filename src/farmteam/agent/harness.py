@@ -57,6 +57,7 @@ class Harness:
         self._event_tasks: set[asyncio.Task] = set()
         self._task_context: dict[str, list[str]] = {}
         self._task_tool_log: dict[str, list[dict]] = {}
+        self._selfanswer_tried: set[str] = set()
         self._stopping = asyncio.Event()
 
     # ------------------------------------------------------------- lifecycle
@@ -282,6 +283,7 @@ class Harness:
         def done(_: asyncio.Task) -> None:
             self._running_tasks.pop(task_id, None)
             self._task_context.pop(task_id, None)
+            self._selfanswer_tried.discard(task_id)
             if not self._stopping.is_set():
                 # Free capacity: look for work that was queued while we were busy.
                 asyncio.create_task(self._drain_queued_tasks())
@@ -393,6 +395,26 @@ class Harness:
 
                 if re.search(r"\bNEED_INPUT:", text):
                     question = text.split("NEED_INPUT:", 1)[1].strip()
+                    if task_id not in self._selfanswer_tried:
+                        # Workers chronically ask questions the spec already answers
+                        # (worst case: asking for the very file they were assigned to
+                        # write). One forced self-answer pass before parking.
+                        self._selfanswer_tried.add(task_id)
+                        turns.append(Turn(role="assistant", content=text))
+                        turns.append(
+                            Turn(
+                                role="user",
+                                content=(
+                                    "Before this question reaches anyone: re-read your "
+                                    "task spec above. If it already answers you — or "
+                                    "if you are asking for something the task expects "
+                                    "YOU to produce — proceed without asking. Repeat "
+                                    "NEED_INPUT: only if the answer truly is not "
+                                    "there."
+                                ),
+                            )
+                        )
+                        continue
                     answer = await self._await_input(task_id, question)
                     if answer is None:
                         await self.client.fail(task_id, "no input provided before timeout")
@@ -422,8 +444,10 @@ class Harness:
                     )
                 payload["tool_log"] = self._task_tool_log.pop(task_id, [])
                 claims_execution = re.search(
-                    r"\b(tests?\s+(all\s+)?pass|passed\s+successfully|ran\s+the\s+tests|"
-                    r"verified\s+by\s+running|all\s+\d+\s+tests)\b",
+                    r"\b(self[- ]?tests?|tests?\s+(all\s+)?pass\w*|passed\s+successfully|"
+                    r"ran\s+the\s+tests|verified\s+by\s+(running|executing)|"
+                    r"all\s+\d+\s+tests|can\s+be\s+executed\s+to|executed\s+successfully|"
+                    r"i\s+(ran|executed|tested)\b|validates?\s+the\s+(function|code|output))",
                     text,
                     re.IGNORECASE,
                 )
@@ -441,6 +465,25 @@ class Harness:
                 files = await self._collect_workspace(task_id, workspace)
                 if files is not None:
                     payload["files"] = files
+                    spec_norm = " ".join((task.get("spec") or "").split())
+                    for f in files:
+                        try:
+                            body = (workspace / f["path"]).read_text()
+                        except Exception:
+                            continue
+                        body_norm = " ".join(body.split())
+                        if (
+                            len(body_norm) > 200
+                            and spec_norm
+                            and (body_norm in spec_norm or spec_norm in body_norm)
+                        ):
+                            # A file that is the spec echoed back is a non-answer
+                            # wearing a manifest entry.
+                            f["echoes_spec"] = True
+                            payload["text"] += (
+                                f"\n\n[worker warning: '{f['path']}' appears to be "
+                                "the task spec echoed back, not produced work]"
+                            )
                 if (
                     self.tools.enabled
                     and not files

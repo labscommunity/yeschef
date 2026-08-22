@@ -160,9 +160,9 @@ config files.
   subagents — never invent one to justify inline polling.
 - **Check for uncollected work first.** `whoami` reports `uncollected_results` — a
   crashed or rate-limited session may have finished work waiting; offer to land it
-  before re-dispatching anything from scratch. After a failed round, prefer
-  `revise_task(id, feedback)` over a fresh submit: the worker sees its prior attempt
-  and your exact feedback.
+  before re-dispatching anything from scratch. Corrections go through
+  `revise_task(id, feedback)` — for FAILED rounds and for fixing a COMPLETED task's
+  output alike; a fresh submit severs the lineage and the worker's context.
 - **Worker claims are claims.** `tool_log` in the result shows what actually ran; a
   worker that says "tests pass" with no shell in its log ran nothing. Check
   `code_in_text_only` and `truncated` flags before landing anything.

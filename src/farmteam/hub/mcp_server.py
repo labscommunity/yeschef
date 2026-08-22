@@ -65,10 +65,16 @@ class IdentityResolver:
     def rename(self, label: str) -> str:
         old = self.current()
         new = label if label.startswith("claude:") else f"claude:{label}"
-        self.store.rename_identity(old, new, AgentKind.CLAUDE)
+        if old == self.default:
+            # The default identity is shared by every unnamed session — renaming it
+            # would hijack their history (tasks created as claude:local suddenly
+            # read claude:<label>). Mint a fresh identity for this session instead.
+            self.store.ensure_identity(new, AgentKind.CLAUDE)
+        else:
+            self.store.rename_identity(old, new, AgentKind.CLAUDE)
+            if old in self._cursors:
+                self._cursors[new] = self._cursors.pop(old)
         self._by_session[self._session_id()] = new
-        if old in self._cursors:
-            self._cursors[new] = self._cursors.pop(old)
         return new
 
     def cursor(self, identity: str) -> int:
@@ -428,8 +434,51 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
         submitted_at = _now()
         me = ident.current()
         assignee_status: str | None = None
+        routed_note: str | None = None
         if assignee:
-            assignee_status = str(store.require_agent(assignee).status())
+            try:
+                agent = store.require_agent(assignee)
+            except HubError:
+                # 'coder task' phrasing: a tag can name the worker. One online
+                # carrier → route with a note; anything else → a helpful error.
+                carriers = [
+                    a
+                    for a in store.list_agents()
+                    if assignee in a.tags and a.kind == AgentKind.WORKER
+                ]
+                online = [a for a in carriers if str(a.status()) != "offline"]
+                if len(online) == 1:
+                    routed_note = (
+                        f"no agent named '{assignee}'; routed to {online[0].name} "
+                        f"(sole online carrier of tag '{assignee}')"
+                    )
+                    assignee = online[0].name
+                    agent = online[0]
+                elif carriers:
+                    raise HubError(
+                        ErrorCode.NOT_FOUND,
+                        f"no agent named '{assignee}' — workers tagged "
+                        f"'{assignee}': " + ", ".join(a.name for a in carriers),
+                        404,
+                    ) from None
+                else:
+                    raise
+            assignee_status = str(agent.status())
+            ceiling = next(
+                (
+                    int(t.split(":", 1)[1])
+                    for t in agent.tags
+                    if t.startswith("max_tokens:") and t.split(":", 1)[1].isdigit()
+                ),
+                None,
+            )
+            if ceiling and len(spec) > ceiling * 3:
+                routed_note = (
+                    (routed_note + " · " if routed_note else "")
+                    + f"spec is {len(spec)} chars against {assignee}'s "
+                    f"max_tokens:{ceiling} — a response reproducing or expanding "
+                    "this much content may truncate or stall; consider chunking"
+                )
         task = store.submit_task(
             title=title,
             spec=spec,
@@ -442,6 +491,8 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
             project=project,
         )
         ack = {"task_id": task.id, "task": task.to_summary()}
+        if routed_note:
+            ack["routing_note"] = routed_note
         if dedupe_key and task.created_at < submitted_at:
             # The key matched an existing live/completed task; nothing new was made.
             ack["deduped"] = True
@@ -466,7 +517,7 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
             matches = [
                 a
                 for a in store.list_agents()
-                if selector in a.tags and str(a.status()) != "offline"
+                if a.matches(selector) and str(a.status()) != "offline"
             ]
             ack["selector_online_matches"] = len(matches)
             if not matches:
@@ -499,6 +550,8 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
         manifest, and content in one call.
         """
         task = store.require_task(task_id)
+        if task.state.terminal:
+            store.mark_collected(task)
         payload = {
             "task_id": task.id,
             "state": str(task.state),
@@ -593,13 +646,23 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
 
     @mcp.tool
     @_guard
-    def cancel_task(task_id: str) -> dict:
-        """Cancel a queued or running task. The agent is told to stop.
+    def cancel_task(task_id: str, force: bool = False) -> dict:
+        """Cancel a task. Queued tasks cancel freely; a task an agent is actively
+        working needs force=true — check task_status first so in-flight work is
+        killed deliberately, not by reflex.
 
         The ack is a proof receipt: terminal state, how many files the task had
         produced, and the assignee's status — enough to confirm a clean stop without
         follow-up calls.
         """
+        current = store.require_task(task_id)
+        if str(current.state) == "working" and not force:
+            raise HubError(
+                ErrorCode.CONFLICT,
+                f"task is actively being worked (attempt {current.attempts}) — pass "
+                "force=true to kill in-flight work",
+                409,
+            )
         cancelled = store.cancel_task(task_id, ident.current(), privileged=True)
         receipt = {
             "task": cancelled.to_summary(),

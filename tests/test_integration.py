@@ -222,7 +222,14 @@ async def test_agent_asks_for_input_and_resumes_when_answered(fleet) -> None:
     hub, claude = fleet
 
     def needs_input(system: str, turns: list[Turn]) -> str:
-        answered = any("staging" in turn.content for turn in turns)
+        # Only a USER-provided answer counts: the harness's self-answer bounce echoes
+        # the model's own NEED_INPUT text back as an assistant turn, which must not
+        # read as an answer.
+        answered = any(
+            "staging" in turn.content and "NEED_INPUT" not in turn.content
+            for turn in turns
+            if turn.role == "user"
+        )
         if answered:
             return "Deployed to staging."
         return "NEED_INPUT: staging or prod?"

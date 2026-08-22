@@ -45,6 +45,14 @@ On a long build, several wait cycles are normal (wait_s caps at 60): the progres
 message now carries an elapsed-seconds heartbeat, so treat a task as possibly wedged
 only when BOTH the state and that heartbeat stop moving across two waits.
 
+Your report contains NO quality adjectives without quoted evidence: never call a
+result "comprehensive" or "successful" — quote the literal lines that prove each
+required element exists (a file's first/last lines, the table row, the function
+signature). You cannot execute code, so never certify it works; report what the
+worker's tool_log proves it did and label everything else as the worker's claim.
+A file whose entry carries `echoes_spec` or whose content matches the dispatch spec
+is a non-answer — lead with that.
+
 Return a compact report the main session can act on WITHOUT re-fetching anything:
 final state; a one-paragraph result summary; files written (paths) or "no files"; and
 the diagnostic block verbatim from task_result — tokens, tool_rounds, truncated flag
