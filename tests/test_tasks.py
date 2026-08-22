@@ -107,9 +107,12 @@ def test_complete_records_result_and_is_terminal(fleet: Store) -> None:
 def test_cancel_terminates_a_running_task(fleet: Store) -> None:
     task = fleet.submit_task("t", "spec", "claude:main", assignee="alpha")
     fleet.claim_task(task.id, "alpha")
-    cancelled = fleet.cancel_task(task.id, "claude:main")
+    cancelled = fleet.cancel_task(task.id, "claude:main", reason="changed my mind")
     assert cancelled.state is TaskState.CANCELLED
-    assert "claude:main" in (cancelled.error or "")
+    # provenance lives in result, not error — a deliberate cancel is not a failure
+    assert cancelled.error is None
+    assert cancelled.result["cancelled_by"] == "claude:main"
+    assert cancelled.result["cancel_reason"] == "changed my mind"
 
 
 def test_events_form_an_audit_trail(fleet: Store) -> None:

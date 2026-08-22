@@ -142,10 +142,18 @@ config files.
   worker (or will outlive this turn), say so and hand the user the task id — the next
   session picks it up via whoami's uncollected_results. Never sign off implying a
   dead watcher will deliver.
-- **Watcher BEFORE the first wait.** On any coder-tier dispatch, spawn the
-  farmteam-watcher before you would call wait_task at all; a second inline wait_task
-  on the same task means you have already broken this rule. Checking several tasks?
-  One `list_tasks(project=...)`, not repeated task_status.
+- **The watcher OWNS the file; you never re-emit its bytes.** On a coder-tier
+  dispatch, spawn the farmteam-watcher before you would wait at all — it waits, lands
+  the returned files to disk with ITS cheap tokens, and reports. Once you've spawned
+  it, do NOT also wait_task, task_result, or re-Write that file yourself: writing a
+  worker's output through your own context (a heredoc, a Write) re-bills every byte as
+  your output tokens — exactly the cost delegation exists to avoid, and it doubles the
+  write. Spawn the watcher OR land inline, never both. Land inline only for a task you
+  will verify immediately anyway; then no watcher. Checking several tasks? One
+  `list_tasks(project=...)`, not repeated task_status.
+- **Don't re-author what the worker got right.** Verifying is reading and testing, not
+  retyping. If the worker's file is correct, let the watcher land it untouched; spend
+  your tokens only on the parts you actually change.
 - **Dialogue mechanics.** Pair any "final message must start with X" instruction with
   `stop_phrase=X` so the room archives on convergence instead of burning its budget
   on restatements. When you hand-drive a debate over DMs, decision artifacts must

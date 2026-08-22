@@ -58,6 +58,7 @@ class Harness:
         self._task_context: dict[str, list[str]] = {}
         self._task_tool_log: dict[str, list[dict]] = {}
         self._selfanswer_tried: set[str] = set()
+        self._prefer_text_mode = False  # set after this worker proves its tools break
         self._stopping = asyncio.Event()
 
     # ------------------------------------------------------------- lifecycle
@@ -310,7 +311,7 @@ class Harness:
                 "proceed without a decision the spec does not answer, say exactly "
                 "NEED_INPUT: followed by your question."
             )
-            if task.get("output_mode") == "text":
+            if task.get("output_mode") == "text" or self._prefer_text_mode:
                 system += (
                     "\n\nAnswer in plain text. If the task produces a file, put its "
                     "complete content in ONE fenced code block — it will be captured "
@@ -353,7 +354,7 @@ class Harness:
                             system,
                             turns,
                             task_id=task_id,
-                            text_only=task.get("output_mode") == "text",
+                            text_only=task.get("output_mode") == "text" or self._prefer_text_mode,
                         )
                         break
                     except Exception as exc:
@@ -392,6 +393,7 @@ class Harness:
                             )
                         )
                         continue
+                    self._prefer_text_mode = True  # its tools are unreliable; stop trying
                     salvage = _extract_lone_code_block(text, task.get("spec") or "")
                     if salvage and workspace is not None:
                         # The tool call was garbage but the payload may not be:
@@ -537,6 +539,15 @@ class Harness:
                     # single fenced block as a real artifact (flagged as extracted),
                     # so task_files works; anything murkier still gets the warning.
                     payload["code_in_text_only"] = True
+                    if not self._prefer_text_mode:
+                        # This model narrates tools instead of calling them; stop
+                        # making every future dispatcher rediscover it — default this
+                        # worker's own later tasks to text mode.
+                        log.info(
+                            "%s: enabling text-mode default (tool emission broken)",
+                            self.config.name,
+                        )
+                        self._prefer_text_mode = True
                     extracted = _extract_lone_code_block(text, task.get("spec") or "")
                     if extracted and workspace is not None:
                         name, body = extracted
@@ -848,12 +859,20 @@ def _extract_lone_code_block(text: str, spec_hint: str = "") -> tuple[str, str] 
         return None
     before = text[: text.index("```")]
     named = re.findall(r"[`\s(]([\w./-]+\.[a-z]{1,4})[`\s):,]", before + " ")
-    if named:
-        name = named[-1].lstrip("./")
+    out_named = re.findall(
+        r"(?:save|write|output|create|name it|as)\s+(?:it\s+)?(?:to\s+|as\s+)?"
+        r"[`\"']?([\w./-]+\.[a-z]{1,4})",
+        (spec_hint + " " + text),
+        re.IGNORECASE,
+    )
+    if out_named:
+        name = out_named[-1].removeprefix("./")
+    elif named:
+        name = named[-1].removeprefix("./")
     elif spec_hint:
         hinted = re.findall(r"[`\s(]([\w./-]+\.[a-z]{1,4})[`\s):,.]", spec_hint + " ")
         name = (
-            hinted[0].lstrip("./")
+            hinted[0].removeprefix("./")
             if len(set(hinted)) == 1 and hinted
             else f"extracted.{EXT_BY_LANG.get(lang.lower(), 'txt')}"
         )

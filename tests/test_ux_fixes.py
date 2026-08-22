@@ -1310,3 +1310,114 @@ def test_agent_dict_carries_heartbeat_age() -> None:
 
     a = Agent(name="x", kind=AgentKind.WORKER, last_seen=now() - 12)
     assert 11 <= a.to_dict()["heartbeat_age_s"] <= 14
+
+
+async def test_worker_self_defaults_to_text_mode_after_tool_failure(tmp_path) -> None:
+    """Once a worker proves its tool emission is broken, later tasks skip tools without
+    the dispatcher having to know — no output_mode passed on the second task."""
+    state = {"task": 0}
+
+    def respond(system, turns):
+        # Task 1: narrate a tool call as prose (triggers code_in_text_only).
+        # Task 2: assert the system prompt has flipped to text mode.
+        if state["task"] == 1:
+            return "Here is `a.py`:\n```python\nA = 1\n```"
+        assert "Do not attempt tool calls" in system  # learned, not told
+        return "Here is `b.py`:\n```python\nB = 2\n```"
+
+    async with live_hub() as hub:
+        mcp = build_mcp(hub.store, HubConfig(db_path=":memory:", default_identity="claude:test"))
+        async with Client(mcp) as claude:
+            config = AgentConfig(
+                name="learner",
+                hub=hub.url,
+                backend={"type": "cli", "command": ["true"], "model": "m"},
+                tools=ToolsConfig(
+                    allow=["file_write", "file_read"], file_root=str(tmp_path / "scratch")
+                ),
+            )
+            harness = Harness(config, backend=MockBackend(respond))
+            runner = asyncio.create_task(harness.run())
+            await wait_for(lambda: hub.store.bus.subscriber_count("learner"))
+            try:
+                state["task"] = 1
+                a = (
+                    await claude.call_tool(
+                        "submit_task", {"title": "a", "spec": "write a.py", "assignee": "learner"}
+                    )
+                ).data
+                await wait_for(lambda: hub.store.require_task(a["task_id"]).state.terminal)
+                assert harness._prefer_text_mode is True
+
+                state["task"] = 2
+                b = (
+                    await claude.call_tool(
+                        "submit_task", {"title": "b", "spec": "write b.py", "assignee": "learner"}
+                    )
+                ).data
+                await wait_for(lambda: hub.store.require_task(b["task_id"]).state.terminal)
+                task = hub.store.require_task(b["task_id"])
+                assert str(task.state) == "completed"
+                assert task.result["files"][0]["path"] == "b.py"
+            finally:
+                runner.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await runner
+                await harness.aclose()
+
+
+# ------------------------------------------------------------- cycle 10 locks
+
+
+def test_extraction_preserves_dotfiles_and_prefers_output_name() -> None:
+    from farmteam.agent.harness import _extract_lone_code_block
+
+    # leading dot survives (was eaten by lstrip)
+    got = _extract_lone_code_block(
+        "Result:\n```yaml\nrepos: []\n```",
+        spec_hint="Write a .pre-commit-config.yaml with ruff.",
+    )
+    assert got[0] == ".pre-commit-config.yaml"
+    # spec inlines a SOURCE file but names an OUTPUT — the output wins
+    got2 = _extract_lone_code_block(
+        "Summary:\n```markdown\n# Ops\n```",
+        spec_hint="Here is errors.log: ... Summarize it and save it as OPS.md.",
+    )
+    assert got2[0] == "OPS.md"
+
+
+async def test_cancel_provenance_carries_reason() -> None:
+    async with live_hub() as hub:
+        mcp = build_mcp(hub.store, HubConfig(db_path=":memory:", default_identity="claude:test"))
+        async with Client(mcp) as claude:
+            hub.store.register_agent("cw", kind="worker", node="n", backend="b", tags=[])
+            ack = (
+                await claude.call_tool(
+                    "submit_task", {"title": "t", "spec": "some work", "assignee": "cw"}
+                )
+            ).data
+            receipt = (
+                await claude.call_tool(
+                    "cancel_task", {"task_id": ack["task_id"], "reason": "legal said no"}
+                )
+            ).data
+            assert receipt["task"]["state"] == "cancelled"
+            task = hub.store.require_task(ack["task_id"])
+            assert task.error is None
+            assert task.result["cancel_reason"] == "legal said no"
+            assert task.result["cancelled_by"] == "claude:test"
+
+
+async def test_duplicate_restatement_archives_early() -> None:
+    from farmteam.models import RoomPolicy
+
+    async with live_hub() as hub:
+        hub.store.register_agent("dw", kind="worker", node="n", backend="b", tags=[])
+        room = hub.store.create_room(
+            "d", "claude:test", participants=["dw"], policy=RoomPolicy(max_messages=20)
+        )
+        same = "This is my substantive position on the matter, which I will now proceed to repeat verbatim forever and ever."
+        hub.store.post_message(room.id, "dw", same)
+        hub.store.post_message(room.id, "dw", "an intervening different point entirely here")
+        hub.store.post_message(room.id, "dw", same)  # seq matches seq-2, same sender
+        assert hub.store.require_room(room.id).archived_reason == "degenerate: duplicate turns"

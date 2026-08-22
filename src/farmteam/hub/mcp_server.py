@@ -502,8 +502,10 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
                 None,
             )
             tools_tag = next((t for t in agent.tags if t.startswith("tools:")), "")
-            if "shell" not in tools_tag and re.search(
-                r"\b(run|execute|pytest|npm test|compile)\b", spec[:2000], re.I
+            if (
+                output_mode != "text"
+                and "shell" not in tools_tag
+                and re.search(r"\b(run|execute|pytest|npm test|compile)\b", spec[:2000], re.I)
             ):
                 routed_note = (
                     (routed_note + " · " if routed_note else "")
@@ -737,7 +739,7 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
 
     @mcp.tool
     @_guard
-    def cancel_task(task_id: str, force: bool = False) -> dict:
+    def cancel_task(task_id: str, force: bool = False, reason: str | None = None) -> dict:
         """Cancel a task. Queued tasks cancel freely; a task an agent is actively
         working needs force=true — check task_status first so in-flight work is
         killed deliberately, not by reflex.
@@ -754,7 +756,7 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
                 "force=true to kill in-flight work",
                 409,
             )
-        cancelled = store.cancel_task(task_id, ident.current(), privileged=True)
+        cancelled = store.cancel_task(task_id, ident.current(), privileged=True, reason=reason)
         receipt = {
             "task": cancelled.to_summary(),
             "files_produced": len((cancelled.result or {}).get("files") or []),

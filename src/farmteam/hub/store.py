@@ -610,7 +610,21 @@ class Store:
             if all(m in spoken for m in worker_members):
                 self.archive_room(room_id, "stop_phrase")
             return
-        if policy.max_messages is not None and row["message_count"] >= policy.max_messages:
+        # A worker restating itself verbatim is a dead debate — archive before it
+        # burns the whole budget on repeats (the reader wades through identical turns).
+        with self._lock:
+            recent = self._db.execute(
+                "SELECT sender, body FROM messages WHERE room_id = ? ORDER BY seq DESC LIMIT 3",
+                (room_id,),
+            ).fetchall()
+        if (
+            len(recent) == 3
+            and recent[0]["sender"] == recent[2]["sender"]
+            and recent[0]["body"] == recent[2]["body"]
+            and len(recent[0]["body"]) > 80
+        ):
+            self.archive_room(room_id, "degenerate: duplicate turns")
+        elif policy.max_messages is not None and row["message_count"] >= policy.max_messages:
             self.archive_room(room_id, "max_messages")
         elif policy.max_total_tokens is not None and row["total_tokens"] >= policy.max_total_tokens:
             self.archive_room(room_id, "max_total_tokens")
@@ -855,7 +869,9 @@ class Store:
         self._require_holder(task_id, agent)
         return self._finish(task_id, TaskState.FAILED, result=result, error=error)
 
-    def cancel_task(self, task_id: str, by: str, privileged: bool = False) -> Task:
+    def cancel_task(
+        self, task_id: str, by: str, privileged: bool = False, reason: str | None = None
+    ) -> Task:
         task = self.get_task(task_id)
         if task is None:
             raise not_found(f"task '{task_id}'")
@@ -866,7 +882,10 @@ class Store:
         if task.state.terminal:
             raise HubError(ErrorCode.CONFLICT, f"task already {task.state}", 409)
         holder = task.assignee
-        finished = self._finish(task_id, TaskState.CANCELLED, error=f"cancelled by {by}")  # noqa: E501
+        # Cancel provenance is not a failure: it lives in result, error stays null so
+        # audit queries can tell a deliberate cancel from a genuine failure.
+        cancel_meta = {"cancelled_by": by, "cancel_reason": reason}
+        finished = self._finish(task_id, TaskState.CANCELLED, result=cancel_meta)
         if holder:
             self.bus.publish(holder, EventKind.TASK_CANCELLED, {"task_id": task_id, "by": by})
         return finished
