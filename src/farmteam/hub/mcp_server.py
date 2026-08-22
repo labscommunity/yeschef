@@ -157,6 +157,10 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
         if not include_offline:
             ref_agents = [a for a in ref_agents if a["status"] != "offline"]
         ref_agents.sort(key=lambda a: (a["kind"] != "worker", a["name"]))
+        active = store.active_task_counts()
+        for a in ref_agents:
+            if a["kind"] == "worker":
+                a["active_tasks"] = active.get(a["name"], 0)
         return {"agents": ref_agents, "me": ident.current()}
 
     # ------------------------------------------------------------ messaging
@@ -351,6 +355,9 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
         needs must be in the spec. Wait with wait_task(task_id) or check later with
         task_status(task_id) from any session.
         """
+        import html as _html
+
+        title = _html.unescape(title)
         me = ident.current()
         assignee_status: str | None = None
         if assignee:
@@ -366,6 +373,12 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
             dedupe_key=dedupe_key,
         )
         ack = {"task_id": task.id, "task": task.to_summary()}
+        if len(spec.strip()) < 20:
+            ack["note"] = (
+                f"spec is only {len(spec.strip())} chars — the worker sees nothing but "
+                "this text (it cannot read your files or this conversation), so an "
+                "underspecified task usually comes back as a question or a guess."
+            )
         if assignee_status is not None:
             ack["assignee_status"] = assignee_status
             if assignee_status == "offline":
@@ -439,15 +452,27 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
     @mcp.tool
     @_guard
     def cancel_task(task_id: str) -> dict:
-        """Cancel a queued or running task. The agent is told to stop."""
+        """Cancel a queued or running task. The agent is told to stop.
+
+        The ack is a proof receipt: terminal state, how many files the task had
+        produced, and the assignee's status — enough to confirm a clean stop without
+        follow-up calls.
+        """
         cancelled = store.cancel_task(task_id, ident.current(), privileged=True)
-        return {"task": cancelled.to_dict()}
+        receipt = {
+            "task": cancelled.to_summary(),
+            "files_produced": len((cancelled.result or {}).get("files") or []),
+        }
+        if cancelled.assignee:
+            with contextlib.suppress(HubError):
+                receipt["assignee_status"] = str(store.require_agent(cancelled.assignee).status())
+        return receipt
 
     @mcp.tool
     @_guard
     def provide_input(task_id: str, message: str) -> dict:
         """Answer an agent that parked a task in input_required, resuming it."""
-        return {"task": store.provide_input(task_id, ident.current(), message).to_dict()}
+        return {"task": store.provide_input(task_id, ident.current(), message).to_summary()}
 
     @mcp.tool
     @_guard
@@ -457,8 +482,12 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
         The efficient way to watch a task: one call per minute instead of a tight
         polling loop. Default returns on any state change; pass until="done" to wait
         through intermediate transitions (queued→claimed→working) and return only on a
-        terminal state or timeout — normally one call per task. Returns a summary;
-        fetch the payload with task_result once done.
+        terminal state or timeout. wait_s is HARD-CAPPED at 60s (staying clear of the
+        client's auto-background threshold), so a multi-minute task takes several
+        calls — that is normal, not a stall; hand long builds to the farmteam-watcher
+        subagent instead of re-issuing waits inline. Returns a summary (with progress,
+        and the worker's question when state is input_required); fetch the payload
+        with task_result once done.
         """
         task = store.require_task(task_id)
         initial = str(task.state)

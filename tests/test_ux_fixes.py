@@ -251,3 +251,167 @@ def test_unknown_config_keys_warn(capsys) -> None:
     AgentConfig.from_dict({"name": "x", "backend": {}, "regster_token": "typo"})
     err = capsys.readouterr().err
     assert "unknown config key 'regster_token'" in err
+
+
+# ------------------------------------------------------------- cycle 2 locks
+
+
+def test_selector_union_matches_any_part() -> None:
+    from farmteam.models import Agent, AgentKind
+
+    a = Agent(name="scout", kind=AgentKind.WORKER, tags=["tier:fast"])
+    assert a.matches("tier:fast|tier:build")
+    assert a.matches("tier:build|scout")
+    assert not a.matches("tier:build|tier:reasoning")
+
+
+def test_summary_carries_age_ran_and_files() -> None:
+    from farmteam.models import Task, TaskState, now
+
+    t = Task(
+        id="task_x",
+        title="t",
+        spec="s",
+        created_by="c",
+        state=TaskState.COMPLETED,
+        created_at=now() - 100,
+        claimed_at=now() - 90,
+        finished_at=now() - 10,
+        result={"files": [{"path": "a"}, {"path": "b"}]},
+    )
+    d = t.to_summary()
+    assert 95 < d["age_s"] < 110
+    assert 75 < d["ran_s"] < 85
+    assert d["files"] == 2
+
+
+async def test_need_input_detected_mid_text(tmp_path) -> None:
+    """The sentinel buried mid-sentence must still park the task, not complete it."""
+
+    def respond(system, turns):
+        return "I need more details. NEED_INPUT: which database should I use?"
+
+    async with live_hub() as hub:
+        mcp = build_mcp(hub.store, HubConfig(db_path=":memory:", default_identity="claude:test"))
+        async with Client(mcp) as claude:
+            config = AgentConfig(
+                name="asker",
+                hub=hub.url,
+                backend={"type": "cli", "command": ["true"], "model": "m"},
+            )
+            harness = Harness(config, backend=MockBackend(respond))
+            runner = asyncio.create_task(harness.run())
+            await wait_for(lambda: hub.store.bus.subscriber_count("asker"))
+            try:
+                ack = (
+                    await claude.call_tool(
+                        "submit_task", {"title": "t", "spec": "build storage", "assignee": "asker"}
+                    )
+                ).data
+                task_id = ack["task_id"]
+                await wait_for(lambda: hub.store.require_task(task_id).state == "input_required")
+                waited = (
+                    await claude.call_tool("wait_task", {"task_id": task_id, "wait_s": 1})
+                ).data
+                # The question rides in the summary's progress message.
+                assert "which database" in waited["task"]["progress"]["message"]
+            finally:
+                runner.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await runner
+                await harness.aclose()
+
+
+async def test_lifetime_tokens_include_task_tokens() -> None:
+    async with live_hub() as hub:
+        hub.store.register_agent("earner", kind="worker", node="n", backend="b", tags=[])
+        t = hub.store.submit_task(title="t", spec="s", created_by="c", assignee="earner")
+        hub.store.claim_task(t.id, "earner")
+        hub.store.complete_task(t.id, "earner", {"text": "ok", "tokens": 395})
+        stats = hub.store.lifetime_stats()
+        assert stats["local_tokens"] >= 395
+
+
+async def test_cancel_ack_is_a_proof_receipt() -> None:
+    async with live_hub() as hub:
+        mcp = build_mcp(hub.store, HubConfig(db_path=":memory:", default_identity="claude:test"))
+        async with Client(mcp) as claude:
+            hub.store.register_agent("stopper", kind="worker", node="n", backend="b", tags=[])
+            ack = (
+                await claude.call_tool(
+                    "submit_task", {"title": "t", "spec": "some work here", "assignee": "stopper"}
+                )
+            ).data
+            receipt = (await claude.call_tool("cancel_task", {"task_id": ack["task_id"]})).data
+            assert receipt["task"]["state"] == "cancelled"
+            assert "spec" not in receipt["task"]
+            assert receipt["files_produced"] == 0
+            assert receipt["assignee_status"] in ("online", "offline")
+            # terminal progress message no longer reads 'started'
+            assert receipt["task"]["progress"]["message"] != "started"
+
+
+async def test_tiny_spec_gets_a_warning_note() -> None:
+    async with live_hub() as hub:
+        mcp = build_mcp(hub.store, HubConfig(db_path=":memory:", default_identity="claude:test"))
+        async with Client(mcp) as claude:
+            hub.store.register_agent("w1", kind="worker", node="n", backend="b", tags=[])
+            ack = (
+                await claude.call_tool(
+                    "submit_task", {"title": "t", "spec": "handle it", "assignee": "w1"}
+                )
+            ).data
+            assert "underspecified" in ack["note"]
+
+
+async def test_roster_carries_active_task_counts() -> None:
+    async with live_hub() as hub:
+        mcp = build_mcp(hub.store, HubConfig(db_path=":memory:", default_identity="claude:test"))
+        async with Client(mcp) as claude:
+            hub.store.register_agent("busybee", kind="worker", node="n", backend="b", tags=[])
+            t = hub.store.submit_task(
+                title="t", spec="work work", created_by="c", assignee="busybee"
+            )
+            hub.store.claim_task(t.id, "busybee")
+            agents = (await claude.call_tool("list_agents", {})).data["agents"]
+            bee = next(a for a in agents if a["name"] == "busybee")
+            assert bee["active_tasks"] == 1
+
+
+async def test_code_in_text_only_is_flagged(tmp_path) -> None:
+    """Tools granted, no files written, fenced code in prose → loud flag."""
+
+    def respond(system, turns):
+        return "Here is the file:\n```python\nprint('hi')\n```\nDone."
+
+    async with live_hub() as hub:
+        mcp = build_mcp(hub.store, HubConfig(db_path=":memory:", default_identity="claude:test"))
+        async with Client(mcp) as claude:
+            config = AgentConfig(
+                name="proser",
+                hub=hub.url,
+                backend={"type": "cli", "command": ["true"], "model": "m"},
+                tools=ToolsConfig(
+                    allow=["file_write", "file_read"], file_root=str(tmp_path / "scratch")
+                ),
+            )
+            harness = Harness(config, backend=MockBackend(respond))
+            runner = asyncio.create_task(harness.run())
+            await wait_for(lambda: hub.store.bus.subscriber_count("proser"))
+            try:
+                ack = (
+                    await claude.call_tool(
+                        "submit_task",
+                        {"title": "t", "spec": "write hello.py", "assignee": "proser"},
+                    )
+                ).data
+                await wait_for(lambda: hub.store.require_task(ack["task_id"]).state == "completed")
+                result = (await claude.call_tool("task_result", {"task_id": ack["task_id"]})).data
+                assert result["result"]["code_in_text_only"] is True
+                assert "no files" in result["result"]["text"]
+                assert result["result"]["tool_log"] == []
+            finally:
+                runner.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await runner
+                await harness.aclose()

@@ -212,10 +212,16 @@ class Agent:
         return AgentStatus.ONLINE
 
     def matches(self, selector: str) -> bool:
-        """`name` match, or `tag:value` / bare tag selector."""
-        if selector == self.name:
-            return True
-        return selector in self.tags
+        """`name` match, or `tag:value` / bare tag selector.
+
+        `a|b` is a union: any part matching means the agent matches, so tag-faithful
+        dispatch can still spill onto idle capacity (`tier:fast|tier:build`).
+        """
+        return any(
+            part == self.name or part in self.tags
+            for part in (p.strip() for p in selector.split("|"))
+            if part
+        )
 
     def to_dict(self, ref: float | None = None) -> dict:
         return {
@@ -348,6 +354,13 @@ class Task:
             "attempts": self.attempts,
             "created_at": self.created_at,
             "finished_at": self.finished_at,
+            "age_s": round(now() - self.created_at, 1) if self.created_at else None,
+            "ran_s": (
+                round(self.finished_at - self.claimed_at, 1)
+                if self.finished_at and self.claimed_at
+                else None
+            ),
+            "files": len((self.result or {}).get("files") or []),
         }
 
 

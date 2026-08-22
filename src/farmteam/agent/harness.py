@@ -56,16 +56,22 @@ class Harness:
         self._claim_lock = asyncio.Lock()
         self._event_tasks: set[asyncio.Task] = set()
         self._task_context: dict[str, list[str]] = {}
+        self._task_tool_log: dict[str, list[dict]] = {}
         self._stopping = asyncio.Event()
 
     # ------------------------------------------------------------- lifecycle
 
     async def run(self) -> None:
+        tags = list(self.config.tags)
+        if not any(t.startswith("max_tokens:") for t in tags):
+            # The output ceiling decides what tasks fit; invisible, it dooms
+            # right-sized-looking dispatches that only fail after a full wait cycle.
+            tags.append(f"max_tokens:{self.config.max_tokens}")
         await self.client.register(
             kind="worker",
             node=self.config.node,
             backend=self.config.backend_label(),
-            tags=self.config.tags,
+            tags=tags,
         )
         log.info(
             "registered %s on %s (%s), tools=%s",
@@ -280,14 +286,17 @@ class Harness:
     async def _work_task(self, task: dict) -> None:
         task_id = task["id"]
         workspace = self._task_workspace(task_id)
+        ticker = asyncio.create_task(self._progress_ticker(task_id))
         try:
             await self.client.progress(task_id, pct=5.0, message="started")
             system = (
                 f"{self.config.rendered_system_prompt()}\n\n"
-                "You have been given a task. Work it to completion and finish with a clear "
-                "summary of what you did and what the answer is. If you genuinely cannot "
-                "proceed without a decision only the requester can make, say exactly "
-                "NEED_INPUT: followed by your question."
+                "You have been given a task. The spec is pre-authorized: doing what it "
+                "says needs no permission, so never ask for confirmation to proceed. "
+                "Work it to completion and finish with a clear summary of what you did "
+                "and what the answer is. Only if you genuinely cannot proceed without a "
+                "decision the spec does not answer, say exactly NEED_INPUT: followed by "
+                "your question."
             )
             if workspace is not None:
                 system += (
@@ -317,7 +326,7 @@ class Harness:
                     )
                     return
 
-                if text.startswith("NEED_INPUT:") or "\nNEED_INPUT:" in text:
+                if re.search(r"\bNEED_INPUT:", text):
                     question = text.split("NEED_INPUT:", 1)[1].strip()
                     answer = await self._await_input(task_id, question)
                     if answer is None:
@@ -346,9 +355,25 @@ class Harness:
                         f"({self.config.max_tokens}) — this result is likely truncated; "
                         "re-dispatch in smaller pieces]"
                     )
+                payload["tool_log"] = self._task_tool_log.pop(task_id, [])
                 files = await self._collect_workspace(task_id, workspace)
                 if files is not None:
                     payload["files"] = files
+                if (
+                    self.tools.enabled
+                    and not files
+                    and not payload["tool_log"]
+                    and re.search(r"```[a-zA-Z]*\n", text)
+                ):
+                    # Code delivered only as prose is not delivered. Flag it so the
+                    # requester extracts or re-dispatches instead of trusting a
+                    # completion with an empty manifest.
+                    payload["code_in_text_only"] = True
+                    payload["text"] = payload["text"] + (
+                        "\n\n[worker warning: this reply contains code but no files "
+                        "were written to the workspace — pull it from the text or "
+                        "re-dispatch demanding file_write]"
+                    )
                 if (
                     getattr(self.backend, "uses_workspace", False)
                     and not files
@@ -382,6 +407,23 @@ class Harness:
             )
             with contextlib.suppress(HubClientError):
                 await self.client.fail(task_id, f"{where}: {type(exc).__name__}: {exc}")
+        finally:
+            ticker.cancel()
+
+    async def _progress_ticker(self, task_id: str) -> None:
+        """Heartbeat progress while the model generates, so a mid-flight status check
+        can tell a healthy long generation from a wedged worker."""
+        started = asyncio.get_running_loop().time()
+        while True:
+            await asyncio.sleep(30.0)
+            elapsed = int(asyncio.get_running_loop().time() - started)
+            tools_run = len(self._task_tool_log.get(task_id, []))
+            with contextlib.suppress(Exception):
+                await self.client.progress(
+                    task_id,
+                    pct=None,
+                    message=f"working — {elapsed}s elapsed, {tools_run} tool calls so far",
+                )
 
     def _task_workspace(self, task_id: str):
         """A fresh directory per task, jailing its tools and collecting its output.
@@ -498,6 +540,17 @@ class Harness:
                         message=f"tools: {names}",
                     )
             results: list[ToolResult] = [await executor.run(call) for call in result.tool_calls]
+            if task_id:
+                log_entries = self._task_tool_log.setdefault(task_id, [])
+                for call, res in zip(result.tool_calls, results, strict=False):
+                    if len(log_entries) < 30:
+                        log_entries.append(
+                            {
+                                "tool": call.name,
+                                "args": str(call.arguments)[:120],
+                                "error": res.is_error,
+                            }
+                        )
             turns.append(Turn(role="assistant", content=result.text, tool_calls=result.tool_calls))
             turns.append(Turn(role="user", content="", tool_results=results))
             result = await self.backend.chat(

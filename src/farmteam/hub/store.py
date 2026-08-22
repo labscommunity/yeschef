@@ -817,6 +817,14 @@ class Store:
         self._require_holder(task_id, agent)
         room = self.ensure_task_room(task_id)
         self._set_state(task_id, TaskState.INPUT_REQUIRED)
+        with self._lock:
+            # Summaries carry progress, so the question rides along — a wait_task
+            # return alone tells the caller what the worker is asking.
+            self._db.execute(
+                "UPDATE tasks SET progress_msg = ? WHERE id = ?",
+                (f"awaiting input: {question[:300]}", task_id),
+            )
+            self._db.commit()
         self.post_message(room.id, agent, question)
         self._log_task(task_id, "input_required", {"question": question})
         task = self.get_task(task_id)
@@ -970,13 +978,15 @@ class Store:
             cursor = self._db.execute(
                 """UPDATE tasks SET state = ?, result_json = ?, error = ?, finished_at = ?,
                                     progress_pct = CASE WHEN ? = 'completed' THEN 100.0
-                                                        ELSE progress_pct END
+                                                        ELSE progress_pct END,
+                                    progress_msg = ?
                    WHERE id = ? AND state NOT IN (?, ?, ?)""",
                 (
                     str(state),
                     json.dumps(result) if result is not None else None,
                     error,
                     now(),
+                    str(state),
                     str(state),
                     task_id,
                     str(TaskState.COMPLETED),
@@ -1035,6 +1045,21 @@ class Store:
 
     # ----------------------------------------------------------------- stats
 
+    def active_task_counts(self) -> dict[str, int]:
+        """Live tasks per assignee, so the roster can show busy/idle directly."""
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT assignee, COUNT(*) AS n FROM tasks
+                    WHERE assignee IS NOT NULL AND state IN (?, ?, ?)
+                    GROUP BY assignee""",
+                (
+                    str(TaskState.CLAIMED),
+                    str(TaskState.WORKING),
+                    str(TaskState.INPUT_REQUIRED),
+                ),
+            ).fetchall()
+        return {row["assignee"]: row["n"] for row in rows}
+
     def lifetime_stats(self) -> dict:
         """What the farm team has done for you, computed from the durable record.
 
@@ -1052,10 +1077,16 @@ class Store:
                 "SELECT COALESCE(SUM(total_tokens), 0) AS tokens, "
                 "COALESCE(SUM(message_count), 0) AS messages FROM rooms"
             ).fetchone()
+            task_tokens = self._db.execute(
+                """SELECT COALESCE(SUM(COALESCE(json_extract(result_json, '$.tokens'), 0)), 0)
+                          AS tokens
+                     FROM tasks WHERE state = ?""",
+                (str(TaskState.COMPLETED),),
+            ).fetchone()
         return {
             "tasks_completed": tasks_row["done"],
             "work_seconds": round(tasks_row["work_s"], 1),
-            "local_tokens": token_row["tokens"],
+            "local_tokens": token_row["tokens"] + task_tokens["tokens"],
             "messages": token_row["messages"],
         }
 

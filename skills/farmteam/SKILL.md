@@ -6,7 +6,9 @@ description: >-
   bulk, parallelizable, cheap, or privacy-sensitive enough to run on a local model
   instead of spending the main model's context — summarizing or classifying many items,
   draft generation, log triage, or running something long in the background and checking
-  on it later. Also use to have two local agents discuss a question and to check the
+  on it later. Triggers whenever the user says to dispatch, offload, farm out, or send
+  work to a worker/coder/agent by name ("coder task", "have scout do it", "use a local
+  worker"). Also use to have two local agents discuss a question and to check the
   status of work already dispatched.
 ---
 
@@ -22,7 +24,15 @@ Two facts shape everything below. **Workers cannot see this machine's files** �
 jailed on their own machine, so every input a task needs must be inlined in the spec, and
 whatever the worker builds comes back through `task_files`/`task_file`. And if your
 harness defers MCP tools, load the whole surface in ONE search up front:
-`ToolSearch("select:mcp__farmteam__list_agents,mcp__farmteam__submit_task,mcp__farmteam__wait_task,mcp__farmteam__task_result,mcp__farmteam__task_files,mcp__farmteam__task_file")`.
+`ToolSearch("select:mcp__farmteam__list_agents,mcp__farmteam__submit_task,mcp__farmteam__wait_task,mcp__farmteam__task_result,mcp__farmteam__task_files,mcp__farmteam__task_file,mcp__farmteam__provide_input,mcp__farmteam__cancel_task")`
+— one search, the whole surface; worker names resolve via farmteam's `list_agents`, not
+this client's own session roster.
+
+**An explicit dispatch is binding.** When the user names a worker or frames the ask as
+a dispatch ("coder task:", "have the farm do it"), doing the work yourself instead is
+not a judgment call you make silently. Dispatch it; if you genuinely believe local
+execution is better (task is trivial, no worker fits), say so in your reply and let
+the stated reason stand on its own.
 
 ## When to reach for it
 
@@ -109,3 +119,9 @@ the hub, so it cannot run forever.
   replies route to you.
 - **Report honestly.** If a task `failed`, say so and show the error; do not pretend a
   local agent's output is your own careful work.
+- **Adopt running work.** If you discover an in-flight task whose artifact the user
+  wants, spawn the watcher for it (id + destination) instead of ending with "want me
+  to check later?" — the done moment should never need another prompt.
+- **Worker claims are claims.** `tool_log` in the result shows what actually ran; a
+  worker that says "tests pass" with no shell in its log ran nothing. Check
+  `code_in_text_only` and `truncated` flags before landing anything.
