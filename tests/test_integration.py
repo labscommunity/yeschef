@@ -558,12 +558,13 @@ async def test_status_is_durable_across_sessions(fleet) -> None:
 
 
 async def test_a_model_that_only_describes_tool_calls_fails_loudly(fleet) -> None:
-    """Some models print tool calls as JSON instead of emitting them. Reporting that as
-    a completed task is worse than failing — the requester believes work happened."""
+    """Parseable text-form tool calls are recovered and executed (see test_ux_fixes);
+    this guards the remaining case — tool-call-shaped text the parser CANNOT recover. Completing
+    that as a task is worse than failing: the requester believes work happened."""
     hub, claude = fleet
     pretend = (
         'I will create the files.\n```json\n{"name": "file_write", '
-        '"arguments": {"path": "index.html", "content": "<html></html>"}}\n```'
+        '"arguments": {path: index.html, content: <html></html>}}\n```'
     )
     harness, runner = await start_agent(
         hub,
@@ -577,7 +578,7 @@ async def test_a_model_that_only_describes_tool_calls_fails_loudly(fleet) -> Non
         )
         task_id = submitted.data["task_id"]
         await wait_for(lambda: hub.store.require_task(task_id).state == "failed")
-        assert "tool calls as text" in hub.store.require_task(task_id).error
+        assert "tool-call-like text" in hub.store.require_task(task_id).error
     finally:
         await stop_agent(harness, runner)
 

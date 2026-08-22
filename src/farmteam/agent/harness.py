@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
+import re
 
-from ..models import EventKind, ReplyWhen, TurnPolicy
+from ..models import EventKind, ReplyWhen, ToolCall, TurnPolicy
 from ..sdk import AgentClient, HubClientError
 from ..tools.executor import ToolExecutor
 from .backends import Turn, build_backend
@@ -309,9 +311,9 @@ class Harness:
                     # failing: the requester believes work happened that never did.
                     await self.client.fail(
                         task_id,
-                        "model wrote tool calls as text instead of calling the tools — "
-                        f"nothing was executed. Model {self.backend.model} may not "
-                        "support tool calling; try one that does.",
+                        "model wrote tool-call-like text that could not be parsed into any "
+                        f"granted tool — nothing was executed. Model {self.backend.model} "
+                        "may not support tool calling; try one that does.",
                     )
                     return
 
@@ -331,7 +333,19 @@ class Harness:
                     "rounds": round_index + 1,
                     "tool_rounds": tool_rounds,
                     "model": self.backend.model,
+                    "spec_chars": len(task.get("spec") or ""),
                 }
+                if result.stop_reason in ("length", "max_tokens"):
+                    # The model hit its output ceiling — a half-finished payload must
+                    # never masquerade as a clean completion.
+                    payload["truncated"] = True
+                    payload["stop_reason"] = result.stop_reason
+                    payload["max_tokens_ceiling"] = self.config.max_tokens
+                    payload["text"] = text + (
+                        "\n\n[worker warning: output hit the max_tokens ceiling "
+                        f"({self.config.max_tokens}) — this result is likely truncated; "
+                        "re-dispatch in smaller pieces]"
+                    )
                 files = await self._collect_workspace(task_id, workspace)
                 if files is not None:
                     payload["files"] = files
@@ -361,8 +375,13 @@ class Harness:
             log.warning("hub rejected update for %s: %s", task_id, exc)
         except Exception as exc:  # noqa: BLE001 - report failure rather than die silently
             log.exception("task %s failed", task_id)
+            where = (
+                f"{self.config.name}@{self.config.node} "
+                f"({self.backend.name}/{self.backend.model} at "
+                f"{getattr(self.backend, 'base_url', 'n/a')} on that node)"
+            )
             with contextlib.suppress(HubClientError):
-                await self.client.fail(task_id, f"{type(exc).__name__}: {exc}")
+                await self.client.fail(task_id, f"{where}: {type(exc).__name__}: {exc}")
 
     def _task_workspace(self, task_id: str):
         """A fresh directory per task, jailing its tools and collecting its output.
@@ -452,6 +471,7 @@ class Harness:
         """
         executor = self._task_tools(task_id)
         specs = executor.specs() if executor.enabled else None
+        allowed = {s["name"] for s in specs} if specs else set()
         result = await self.backend.chat(
             system,
             turns,
@@ -460,7 +480,14 @@ class Harness:
             temperature=self.config.temperature,
         )
         iterations = 0
-        while result.tool_calls and iterations < self.config.max_tool_iterations:
+        while iterations < self.config.max_tool_iterations:
+            if not result.tool_calls and specs:
+                # Many local models (qwen2.5-coder among them) emit tool calls as
+                # text instead of using the native protocol. Recover them: a parsed,
+                # validated text-form call executes exactly like a native one.
+                result.tool_calls = _parse_text_tool_calls(result.text or "", allowed)
+            if not result.tool_calls:
+                break
             iterations += 1
             if task_id:
                 names = ", ".join(call.name for call in result.tool_calls)
@@ -481,6 +508,53 @@ class Harness:
                 temperature=self.config.temperature,
             )
         return result, iterations
+
+
+def _parse_text_tool_calls(text: str, allowed: set[str]) -> list[ToolCall]:
+    """Recover tool calls a model wrote as text instead of emitting natively.
+
+    Handles the shapes local models actually produce: qwen's <tool_call>{...}</tool_call>
+    tags, fenced ```json blocks, OpenAI-style {"function": {"name", "arguments"}}
+    nesting, arguments as a JSON-encoded string, and bare one-object lines. Only calls
+    naming an allowed tool are returned — everything else stays plain text.
+    """
+    candidates: list[str] = []
+    for m in re.finditer(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", text, re.DOTALL):
+        candidates.append(m.group(1))
+    for m in re.finditer(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL):
+        candidates.append(m.group(1))
+    stripped = text.strip()
+    if stripped.startswith("{") and stripped.endswith("}"):
+        candidates.append(stripped)
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}") and '"name"' in line:
+            candidates.append(line)
+
+    calls: list[ToolCall] = []
+    seen: set[str] = set()
+    for raw in candidates:
+        if raw in seen:
+            continue
+        seen.add(raw)
+        try:
+            obj = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        if isinstance(obj.get("function"), dict):
+            obj = obj["function"]
+        name = obj.get("name")
+        args = obj.get("arguments", obj.get("parameters", {}))
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except ValueError:
+                continue
+        if name in allowed and isinstance(args, dict):
+            calls.append(ToolCall(id=f"text_{len(calls)}", name=name, arguments=args))
+    return calls
 
 
 def _looks_like_unexecuted_tool_calls(text: str) -> bool:

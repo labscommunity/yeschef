@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import socket
+import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,6 +46,26 @@ class AgentConfig:
 
     @classmethod
     def from_dict(cls, raw: dict) -> AgentConfig:
+        known = {
+            "name",
+            "hub",
+            "node",
+            "tags",
+            "register_token",
+            "backend",
+            "persona",
+            "runtime",
+            "tools",
+        }
+        for key in raw:
+            if key not in known:
+                # A misplaced key (register_token under [tools], a typo) otherwise
+                # fails much later with an error that never mentions it.
+                print(
+                    f"warning: unknown config key {key!r} ignored "
+                    f"(known: {', '.join(sorted(known))})",
+                    file=sys.stderr,
+                )
         persona = raw.get("persona") or {}
         runtime = raw.get("runtime") or {}
         backend = dict(raw.get("backend") or {})

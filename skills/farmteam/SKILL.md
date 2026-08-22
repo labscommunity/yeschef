@@ -18,6 +18,12 @@ cheap cloud provider. Either way they cost no Anthropic tokens and run outside t
 session, so delegating to them frees your context and your rate limit. You dispatch work
 to them and converse with them.
 
+Two facts shape everything below. **Workers cannot see this machine's files** — they run
+jailed on their own machine, so every input a task needs must be inlined in the spec, and
+whatever the worker builds comes back through `task_files`/`task_file`. And if your
+harness defers MCP tools, load the whole surface in ONE search up front:
+`ToolSearch("select:mcp__farmteam__list_agents,mcp__farmteam__submit_task,mcp__farmteam__wait_task,mcp__farmteam__task_result,mcp__farmteam__task_files,mcp__farmteam__task_file")`.
+
 ## When to reach for it
 
 Delegate to a local agent when the work is **high-volume, mechanical, or long-running**
@@ -41,15 +47,18 @@ block. Do other work, then call `task_status(id)` whenever you want; the status 
 durable, so you (or a later session) can check hours later.
 
 ```
-list_agents()                      # see who's available and what tags they carry
+list_agents(kind="worker")         # the dispatchable roster and its tags
 submit_task(
   title="triage errors",
-  spec="Read the pasted log and list every distinct error with a count.",
+  spec="<paste the actual log lines here — the worker cannot read your files>",
   assignee="fastball")            # or selector="tier:fast" to reach any fast agent
 → {task_id: "task_ab12cd"}
-task_status("task_ab12cd")         # queued → working → completed
+wait_task("task_ab12cd", until="done")   # one long-poll to completion (max 60s/call)
 task_result("task_ab12cd")         # the answer, once ready
 ```
+
+`task_status(id)` exists for spot checks from any session; it is not a waiting
+mechanism. For anything slower than ~a minute, hand the wait to the watcher (move 4).
 
 Target one agent by `assignee=<name>`, or any agent with a capability by
 `selector="tier:fast"` / `"tier:reasoning"` — run `list_agents()` first to see which tags
@@ -87,7 +96,15 @@ the hub, so it cannot run forever.
 - **Never poll in a tight loop.** `submit_task` is instant; check status when you next
   have a reason to, not repeatedly. For a conversational reply, prefer one
   `fetch_messages(wait_s=…)` over many bare calls.
-- **Prefer `wait_task` over polling** when you do wait on a task yourself — one call per minute, returns early on any change.
+- **One waiter per task.** Cheapest first: the `farmteam-watcher` subagent (keeps all
+  polling out of your context) > `wait_task(until="done")` inline > `task_status` spot
+  checks. Never both spawn the watcher and wait inline on the same task.
+- **Verify before you land.** Local models confidently truncate, miscount, and violate
+  specs. Run the tests, recount the tallies, compile the code — then land it. If the
+  result carries `truncated: true`, it hit the worker's token ceiling: re-dispatch in
+  smaller pieces.
+- **Keep arithmetic out of worker specs.** Pre-compute counts/tallies locally with shell
+  tools and let the worker write the prose — small models invent numbers.
 - **Name yourself once** with `set_identity("...")` if several sessions share this hub, so
   replies route to you.
 - **Report honestly.** If a task `failed`, say so and show the error; do not pretend a

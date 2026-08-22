@@ -838,7 +838,7 @@ def list_tasks(state: str = typer.Option(None), hub: str = typer.Option(None)) -
 @app.command("task")
 def show_task(task_id: str, hub: str = typer.Option(None)) -> None:
     """Show one task with its progress and event history."""
-    data = _mcp("task_status", {"task_id": task_id}, hub=hub)
+    data = _mcp("task_status", {"task_id": task_id, "verbose": True}, hub=hub)
     task = data["task"]
     console.print(
         f"[bold]{task['title']}[/bold]  [{task['state']}]  → {task['assignee'] or task['selector']}"
@@ -952,7 +952,18 @@ def agent_run(
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """Run an agent from a TOML config (advanced; `join` is the easy path)."""
-    _run_worker(AgentConfig.load(config), verbose)
+    cfg = AgentConfig.load(config)
+    if cfg.backend.get("type", "openai_compat") != "cli":
+        ok, message = asyncio.run(preflight(cfg.backend))
+        if not ok:
+            console.print(
+                f"[red]WARNING:[/red] backend preflight failed — {message}\n"
+                f"  {cfg.backend.get('base_url')} does not serve "
+                f"[bold]{cfg.backend.get('model')}[/bold] right now. Registering anyway; "
+                "every task will fail until the model answers. Fix the backend or the "
+                "config, then restart this worker."
+            )
+    _run_worker(cfg, verbose)
 
 
 @agent_app.command("run-detached-worker", hidden=True)

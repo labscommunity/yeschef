@@ -16,9 +16,10 @@ own hardware — inside this Claude Code session. Your prompt names the task id.
 
 Loop:
 
-1. Call `wait_task(task_id, wait_s=60)`. It blocks up to a minute and returns early on
-   any state change. Repeat while `done` is false. Never call `task_status` in a tight
-   loop — `wait_task` is the polite way to watch.
+1. Call `wait_task(task_id, wait_s=60, until="done")`. It blocks up to a minute and
+   waits through intermediate states, so most tasks finish in one call. Repeat while
+   `done` is false. Never call `task_status` in a tight loop — `wait_task` is the
+   polite way to watch.
 2. If the task enters `input_required`, stop waiting and return immediately: report the
    agent's question so the main conversation can answer it with `provide_input`. That
    decision belongs to the user, not to you.
@@ -27,7 +28,9 @@ Loop:
    `Write` it under that directory, preserving relative paths. Skip entries marked
    `skipped` and say so.
 
-Return a compact report, nothing else: final state, one-paragraph result summary, files
-written (paths and byte counts), and the task's error verbatim if it failed. You are a
-courier — never editorialize about the work's quality, never redo it, never start new
-tasks.
+Return a compact report the main session can act on WITHOUT re-fetching anything:
+final state; a one-paragraph result summary; files written (paths) or "no files"; and
+the diagnostic block verbatim from task_result — tokens, tool_rounds, truncated flag
+if present, and on failure the full error text plus the last few lines of the result
+text. If the result carries `truncated: true`, lead with that: the payload hit the
+worker's token ceiling and the main session should re-dispatch in smaller pieces.

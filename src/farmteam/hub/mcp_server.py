@@ -85,8 +85,9 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
             "Dispatch tasks to your farm team — AI agents you run yourself, usually local "
             "models on your own hardware — and "
             "hold multi-turn conversations with them. submit_task returns immediately with a "
-            "task id; call "
-            "task_status(id) at any time, from any session, to check on it. Use send_message "
+            "task id; "
+            "wait_task(id, until='done') long-polls it to completion, and task_status(id) "
+            "spot-checks it at any time, from any session. Use send_message "
             "for a direct back-and-forth with one agent, create_room/post for group "
             "conversations, and start_dialogue to have two or more local agents converse "
             "autonomously while you observe with room_transcript."
@@ -144,11 +145,18 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
 
     @mcp.tool
     @_guard
-    def list_agents(include_offline: bool = True) -> dict:
-        """List agents on the fleet: name, node, model backend, tags, online status."""
+    def list_agents(include_offline: bool = True, kind: str | None = None) -> dict:
+        """List agents on the fleet: name, node, model backend, tags, online status.
+
+        Dispatchable workers come first; `claude` kind entries are session identities,
+        not dispatch targets. Pass kind="worker" for just the dispatchable roster.
+        """
         ref_agents = [a.to_dict() for a in store.list_agents()]
+        if kind:
+            ref_agents = [a for a in ref_agents if a["kind"] == kind]
         if not include_offline:
             ref_agents = [a for a in ref_agents if a["status"] != "offline"]
+        ref_agents.sort(key=lambda a: (a["kind"] != "worker", a["name"]))
         return {"agents": ref_agents, "me": ident.current()}
 
     # ------------------------------------------------------------ messaging
@@ -338,12 +346,15 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
         """Dispatch a background task to a local agent and return its id immediately.
 
         Target one agent by name with `assignee`, or any agent carrying a tag with
-        `selector` (e.g. "tier:reasoning") — the first idle match claims it. Check on it
-        later with task_status(task_id) from any session.
+        `selector` (e.g. "tier:reasoning") — the first idle match claims it. The worker
+        runs on another machine and CANNOT read this project's files: everything it
+        needs must be in the spec. Wait with wait_task(task_id) or check later with
+        task_status(task_id) from any session.
         """
         me = ident.current()
+        assignee_status: str | None = None
         if assignee:
-            store.require_agent(assignee)
+            assignee_status = str(store.require_agent(assignee).status())
         task = store.submit_task(
             title=title,
             spec=spec,
@@ -354,15 +365,39 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
             timeout_s=timeout_s,
             dedupe_key=dedupe_key,
         )
-        return {"task_id": task.id, "task": task.to_dict()}
+        ack = {"task_id": task.id, "task": task.to_summary()}
+        if assignee_status is not None:
+            ack["assignee_status"] = assignee_status
+            if assignee_status == "offline":
+                ack["note"] = (
+                    f"{assignee} is registered but offline — the task stays queued "
+                    "until it reconnects."
+                )
+        if selector:
+            matches = [
+                a
+                for a in store.list_agents()
+                if selector in a.tags and str(a.status()) != "offline"
+            ]
+            ack["selector_online_matches"] = len(matches)
+            if not matches:
+                ack["note"] = (
+                    f"no online agent currently carries tag '{selector}' — the task "
+                    "stays queued until one does."
+                )
+        return ack
 
     @mcp.tool
     @_guard
-    def task_status(task_id: str, event_limit: int = 10) -> dict:
-        """Check a task's state, progress, and recent events. Safe to call at any time."""
+    def task_status(task_id: str, event_limit: int = 10, verbose: bool = False) -> dict:
+        """Check a task's state, progress, and recent events. Safe to call at any time.
+
+        Returns a summary (no spec/result bodies); pass verbose=True for the full
+        record, or use task_result for the result payload.
+        """
         task = store.require_task(task_id)
         return {
-            "task": task.to_dict(),
+            "task": task.to_dict() if verbose else task.to_summary(),
             "events": [e.to_dict() for e in store.task_events(task_id, event_limit)],
         }
 
@@ -399,7 +434,7 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
             created_by=ident.current() if mine_only else None,
             limit=limit,
         )
-        return {"tasks": [t.to_dict() for t in tasks]}
+        return {"tasks": [t.to_summary() for t in tasks]}
 
     @mcp.tool
     @_guard
@@ -416,22 +451,27 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
 
     @mcp.tool
     @_guard
-    async def wait_task(task_id: str, wait_s: float = 60.0) -> dict:
+    async def wait_task(task_id: str, wait_s: float = 60.0, until: str = "change") -> dict:
         """Wait (up to 60s) for a task to change state or finish, then report it.
 
         The efficient way to watch a task: one call per minute instead of a tight
-        polling loop. Returns immediately once the task reaches a terminal state.
+        polling loop. Default returns on any state change; pass until="done" to wait
+        through intermediate transitions (queued→claimed→working) and return only on a
+        terminal state or timeout — normally one call per task. Returns a summary;
+        fetch the payload with task_result once done.
         """
         task = store.require_task(task_id)
         initial = str(task.state)
         deadline = asyncio.get_running_loop().time() + min(wait_s, MAX_LONG_POLL_S)
         while asyncio.get_running_loop().time() < deadline:
-            if task.state.terminal or str(task.state) != initial:
+            if task.state.terminal:
+                break
+            if until != "done" and str(task.state) != initial:
                 break
             await asyncio.sleep(2.0)
             task = store.require_task(task_id)
         return {
-            "task": task.to_dict(),
+            "task": task.to_summary(),
             "changed": str(task.state) != initial,
             "done": task.state.terminal,
         }

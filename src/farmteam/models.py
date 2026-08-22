@@ -329,6 +329,27 @@ class Task:
             "finished_at": self.finished_at,
         }
 
+    def to_summary(self) -> dict:
+        """Slim view for acks, waits, and listings — no spec or result bodies.
+
+        The spec is text the caller wrote and the result has its own tool; echoing
+        either in every reply re-bills an orchestrating model for its own words on
+        each poll of a long task.
+        """
+        return {
+            "id": self.id,
+            "title": self.title,
+            "state": str(self.state),
+            "assignee": self.assignee,
+            "created_by": self.created_by,
+            "room_id": self.room_id,
+            "progress": {"pct": self.progress_pct, "message": self.progress_msg},
+            "error": self.error,
+            "attempts": self.attempts,
+            "created_at": self.created_at,
+            "finished_at": self.finished_at,
+        }
+
 
 @dataclass(slots=True)
 class TaskEvent:
