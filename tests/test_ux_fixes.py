@@ -732,3 +732,129 @@ async def test_malformed_tool_text_gets_one_corrective_retry(tmp_path) -> None:
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await runner
                 await harness.aclose()
+
+
+# ------------------------------------------------------------- cycle 4 locks
+
+
+async def test_wait_room_returns_new_messages_and_archive() -> None:
+    async with live_hub() as hub:
+        mcp = build_mcp(hub.store, HubConfig(db_path=":memory:", default_identity="claude:test"))
+        async with Client(mcp) as claude:
+            hub.store.register_agent("talker", kind="worker", node="n", backend="b", tags=[])
+            room = hub.store.create_room("debate", "claude:test", participants=["talker"])
+            seed = hub.store.post_message(room.id, "claude:test", "the seed")
+
+            async def speak():
+                await asyncio.sleep(0.3)
+                hub.store.post_message(room.id, "talker", "worker turn one")
+
+            mover = asyncio.create_task(speak())
+            got = (
+                await claude.call_tool(
+                    "wait_room", {"room": room.id, "from_seq": seed.seq, "wait_s": 10}
+                )
+            ).data
+            await mover
+            assert [m["body"] for m in got["messages"]] == ["worker turn one"]
+            assert got["archived"] is False
+
+            hub.store.archive_room(room.id, "cap reached", by="hub", privileged=True)
+            done = (
+                await claude.call_tool(
+                    "wait_room",
+                    {"room": room.id, "from_seq": got["next_seq"], "wait_s": 5},
+                )
+            ).data
+            assert done["archived"] is True
+
+
+async def test_double_unparseable_with_code_block_salvages(tmp_path) -> None:
+    """Two garbage tool emissions but a real code block → completed with flags, not lost."""
+
+    def respond(system, turns):
+        return (
+            'Calling: {"name": "file_write", "arguments": {bad json here}}\n'
+            "the file `util.py`:\n```python\nVALUE = 42\n```"
+        )
+
+    async with live_hub() as hub:
+        mcp = build_mcp(hub.store, HubConfig(db_path=":memory:", default_identity="claude:test"))
+        async with Client(mcp) as claude:
+            config = AgentConfig(
+                name="salvager",
+                hub=hub.url,
+                backend={"type": "cli", "command": ["true"], "model": "m"},
+                tools=ToolsConfig(
+                    allow=["file_write", "file_read"], file_root=str(tmp_path / "scratch")
+                ),
+            )
+            harness = Harness(config, backend=MockBackend(respond))
+            runner = asyncio.create_task(harness.run())
+            await wait_for(lambda: hub.store.bus.subscriber_count("salvager"))
+            try:
+                ack = (
+                    await claude.call_tool(
+                        "submit_task",
+                        {"title": "t", "spec": "write util.py with VALUE", "assignee": "salvager"},
+                    )
+                ).data
+                await wait_for(lambda: hub.store.require_task(ack["task_id"]).state.terminal)
+                task = hub.store.require_task(ack["task_id"])
+                assert str(task.state) == "completed"
+                assert task.result["tool_text_unparsed"] is True
+                assert task.result["files"][0]["path"] == "util.py"
+                assert task.result["files"][0]["auto_extracted"] is True
+            finally:
+                runner.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await runner
+                await harness.aclose()
+
+
+async def test_all_tool_failures_flag_blocked(tmp_path) -> None:
+    def respond(system, turns):
+        # native tool call to an escaping path, then a polite report
+        if len(turns) == 1:
+            from farmteam.agent.backends.base import ToolCall as TC
+
+            return ChatResult(
+                text="",
+                tool_calls=[TC(id="1", name="file_read", arguments={"path": "/etc/passwd"})],
+                input_tokens=1,
+                output_tokens=1,
+            )
+        return ChatResult(
+            text="Could not access the path; stopping.", input_tokens=1, output_tokens=1
+        )
+
+    async with live_hub() as hub:
+        mcp = build_mcp(hub.store, HubConfig(db_path=":memory:", default_identity="claude:test"))
+        async with Client(mcp) as claude:
+            config = AgentConfig(
+                name="blocked",
+                hub=hub.url,
+                backend={"type": "cli", "command": ["true"], "model": "m"},
+                tools=ToolsConfig(
+                    allow=["file_write", "file_read"], file_root=str(tmp_path / "scratch")
+                ),
+            )
+            harness = Harness(config, backend=MockBackend(respond))
+            runner = asyncio.create_task(harness.run())
+            await wait_for(lambda: hub.store.bus.subscriber_count("blocked"))
+            try:
+                ack = (
+                    await claude.call_tool(
+                        "submit_task",
+                        {"title": "t", "spec": "read the passwd file", "assignee": "blocked"},
+                    )
+                ).data
+                await wait_for(lambda: hub.store.require_task(ack["task_id"]).state.terminal)
+                task = hub.store.require_task(ack["task_id"])
+                assert task.result.get("all_tools_failed") is True
+                assert "blocked" in task.result["text"]
+            finally:
+                runner.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await runner
+                await harness.aclose()

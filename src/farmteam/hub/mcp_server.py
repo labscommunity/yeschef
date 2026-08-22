@@ -153,6 +153,7 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
         orphans = store.unretrieved_results()
         if orphans:
             info["uncollected_results"] = orphans
+            info["uncollected_sample"] = store.unretrieved_result_entries()
         return info
 
     @mcp.tool
@@ -300,6 +301,38 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
 
     @mcp.tool
     @_guard
+    async def wait_room(room: str, from_seq: int = 0, wait_s: float = 60.0) -> dict:
+        """Wait (up to 60s) for new messages in a room — the dialogue counterpart of
+        wait_task.
+
+        Returns as soon as a message lands past from_seq, or when the room archives
+        (a bounded dialogue ending), or at the cap with wait_more:true. One call per
+        minute instead of transcript polling; hand a long dialogue to the
+        farmteam-watcher subagent, which knows how to use this.
+        """
+        target = store.require_room(room)
+        deadline = asyncio.get_running_loop().time() + min(wait_s, MAX_LONG_POLL_S)
+        while asyncio.get_running_loop().time() < deadline:
+            messages = store.fetch_messages(room, after_seq=from_seq, limit=100)
+            target = store.require_room(room)
+            if messages or target.archived:
+                return {
+                    "room": target.to_dict(),
+                    "messages": [m.to_dict() for m in messages],
+                    "next_seq": messages[-1].seq if messages else from_seq,
+                    "archived": target.archived,
+                }
+            await asyncio.sleep(2.0)
+        return {
+            "room": target.to_dict(),
+            "messages": [],
+            "next_seq": from_seq,
+            "archived": target.archived,
+            "wait_more": True,
+        }
+
+    @mcp.tool
+    @_guard
     def archive_room(room: str, reason: str = "closed by operator") -> dict:
         """Stop a conversation. Archived rooms reject further messages."""
         archived = store.archive_room(room, reason, by=ident.current(), privileged=True)
@@ -319,8 +352,10 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
         """Have local agents converse with each other autonomously toward a goal.
 
         Creates a bounded room, seeds it with the goal, and hands the floor to the first
-        agent. Returns immediately — observe with room_transcript, steer by posting into
-        the room, stop with archive_room.
+        agent. Returns immediately; workers reply asynchronously and the first turn
+        typically lands within a minute — follow along with wait_room (or hand it to
+        the farmteam-watcher subagent) rather than reporting "running" from the seed
+        alone. Steer by posting into the room; stop with archive_room.
         """
         me = ident.current()
         if not participants:

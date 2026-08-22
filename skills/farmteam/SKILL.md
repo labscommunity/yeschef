@@ -24,7 +24,7 @@ Two facts shape everything below. **Workers cannot see this machine's files** �
 jailed on their own machine, so every input a task needs must be inlined in the spec, and
 whatever the worker builds comes back through `task_files`/`task_file`. And if your
 harness defers MCP tools, load the whole surface in ONE search up front:
-`ToolSearch("select:mcp__farmteam__list_agents,mcp__farmteam__submit_task,mcp__farmteam__wait_task,mcp__farmteam__task_result,mcp__farmteam__task_files,mcp__farmteam__task_file,mcp__farmteam__provide_input,mcp__farmteam__cancel_task")`
+`ToolSearch("select:mcp__farmteam__whoami,mcp__farmteam__list_agents,mcp__farmteam__submit_task,mcp__farmteam__wait_task,mcp__farmteam__task_status,mcp__farmteam__task_result,mcp__farmteam__task_files,mcp__farmteam__task_file,mcp__farmteam__list_tasks,mcp__farmteam__provide_input,mcp__farmteam__cancel_task,mcp__farmteam__revise_task")`
 — one search, the whole surface; worker names resolve via farmteam's `list_agents`, not
 this client's own session roster.
 
@@ -102,6 +102,14 @@ room and the agents converse on their own. Watch with `room_transcript(room)`, s
 `post`ing into it, and stop early with `archive_room(room)`. Every dialogue is capped by
 the hub, so it cannot run forever.
 
+## If the mcp__farmteam__* tools are missing
+
+The farmteam MCP server failing to connect almost always means **the hub is not
+running or unreachable** — this is not a Claude Code configuration problem. Tell the
+user to run `farmteam doctor` (diagnoses) or `farmteam up` (starts the hub), then
+offer to retry the dispatch once it's back. Don't send them digging through MCP
+config files.
+
 ## Discipline
 
 - **Never poll in a tight loop.** `submit_task` is instant; check status when you next
@@ -120,6 +128,13 @@ the hub, so it cannot run forever.
   replies route to you.
 - **Report honestly.** If a task `failed`, say so and show the error; do not pretend a
   local agent's output is your own careful work.
+- **A started dialogue is owned work.** After start_dialogue, follow it with
+  `wait_room` or hand the room id to the farmteam-watcher (room mode) — never end
+  your turn "waiting for turns to accumulate": that abandons the debate and the user
+  gets nothing. The done moment of a dialogue is its archive (cap/stop-phrase/idle).
+- **Revision rounds get watchers too.** Each revise_task returns a new task id —
+  spawn the watcher on it like any dispatch instead of babysitting wait_task inline
+  for the whole loop.
 - **Adopt running work.** If you discover an in-flight task whose artifact the user
   wants, spawn the watcher for it (id + destination) instead of ending with "want me
   to check later?" — the done moment should never need another prompt.

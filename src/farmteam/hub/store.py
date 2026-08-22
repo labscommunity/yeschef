@@ -1100,6 +1100,18 @@ class Store:
             row = self._db.execute("SELECT MIN(created_at) AS t FROM tasks").fetchone()
         return row["t"]
 
+    def unretrieved_result_entries(self, limit: int = 3) -> list[dict]:
+        """A few identifying rows for the uncollected counter, so a session can judge
+        relevance (same project or not) without extra calls."""
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT id, title, project FROM tasks
+                    WHERE state = ? AND result_json LIKE '%artifact_id%'
+                    ORDER BY finished_at DESC LIMIT ?""",
+                (str(TaskState.COMPLETED), limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def unretrieved_results(self) -> int:
         """Completed tasks whose artifacts nobody ever fetched — work done and paid
         for that no session has collected (a crashed or rate-limited session's

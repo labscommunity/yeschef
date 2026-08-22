@@ -7,7 +7,7 @@ description: >-
   worker to completion, pulls back any files the task produced, and returns a compact
   report — so a task running on another machine shows up and completes in this session
   exactly like a native subagent.
-tools: mcp__farmteam__wait_task, mcp__farmteam__task_status, mcp__farmteam__task_result, mcp__farmteam__task_files, mcp__farmteam__task_file, Write
+tools: mcp__farmteam__wait_task, mcp__farmteam__task_status, mcp__farmteam__task_result, mcp__farmteam__task_files, mcp__farmteam__task_file, mcp__farmteam__wait_room, mcp__farmteam__room_transcript, Write
 model: haiku
 ---
 
@@ -23,10 +23,22 @@ Loop:
 2. If the task enters `input_required`, stop waiting and return immediately: report the
    agent's question so the main conversation can answer it with `provide_input`. That
    decision belongs to the user, not to you.
-3. When `done`: call `task_result`. If the result lists `files` and your prompt gave you
-   a destination directory, pull each returned file with `task_file(task_id, path)` and
-   `Write` it under that directory, preserving relative paths (add a trailing newline
-   to text files that lack one). Skip entries marked `skipped` and say so.
+3. When `done`: call `task_result(task_id, include_files=True)` — one call returns
+   result AND file contents; a separate task_files call is only needed if content was
+   omitted. `Write` each file under your destination directory, preserving relative
+   paths (add a trailing newline to text files that lack one). This includes entries
+   marked `auto_extracted` — land them like any file. NEVER retype code out of the
+   result text by hand: if a file exists on the hub, land its exact bytes, and state
+   the byte count you wrote vs what the hub reported. Skip entries marked `skipped`
+   and say so.
+
+**Room mode.** If your prompt names a room id instead of a task id, you are watching a
+dialogue: loop `wait_room(room_id, from_seq=<last>, wait_s=60)` until `archived` (the
+bounded ending). Then report: how it ended (message cap / stop phrase / idle), total
+turns, and a faithful 3-6 bullet summary of the strongest points per participant —
+labeled as their claims, with message seq references. If asked, Write the transcript
+to a file. Never report a dialogue as "running" unless you have seen at least one
+worker message past the seed.
 
 On a long build, several wait cycles are normal (wait_s caps at 60): the progress
 message now carries an elapsed-seconds heartbeat, so treat a task as possibly wedged

@@ -305,8 +305,10 @@ class Harness:
             )
             if workspace is not None:
                 system += (
-                    "\n\nWork inside your current workspace directory. Files you create "
-                    "there are returned to the requester when you finish."
+                    f"\n\nYour workspace directory is {workspace} — work inside it; "
+                    "paths outside it (and ~ expansion) are rejected by your tools. "
+                    "Files you create there are returned to the requester when you "
+                    "finish."
                 )
             turns = [Turn(role="user", content=f"Task: {task['title']}\n\n{task['spec']}")]
 
@@ -324,6 +326,13 @@ class Harness:
                         # One corrective retry before giving up: echo the schema
                         # expectation back. A single malformed emission is not a
                         # verdict on the model's capability.
+                        with contextlib.suppress(HubClientError):
+                            await self.client.progress(
+                                task_id,
+                                pct=None,
+                                message="attempt output unparseable — retrying with "
+                                "corrective prompt",
+                            )
                         turns.append(Turn(role="assistant", content=text))
                         turns.append(
                             Turn(
@@ -338,11 +347,40 @@ class Harness:
                             )
                         )
                         continue
+                    salvage = _extract_lone_code_block(text)
+                    if salvage and workspace is not None:
+                        # The tool call was garbage but the payload may not be:
+                        # ship the code with loud flags instead of losing it.
+                        name, body = salvage
+                        (workspace / name).write_text(body)
+                        files = await self._collect_workspace(task_id, workspace)
+                        for f in files or []:
+                            f["auto_extracted"] = True
+                        await self.client.complete(
+                            task_id,
+                            {
+                                "text": text + "\n\n[worker warning: tool calls were emitted as "
+                                "unparseable text in two generation rounds — the code "
+                                f"block was salvaged as '{name}'; verify before "
+                                "trusting]",
+                                "tokens": result.total_tokens,
+                                "rounds": round_index + 1,
+                                "tool_rounds": 0,
+                                "tool_log": self._task_tool_log.pop(task_id, []),
+                                "model": self.backend.model,
+                                "spec_chars": len(task.get("spec") or ""),
+                                "code_in_text_only": True,
+                                "tool_text_unparsed": True,
+                                "files": files or [],
+                            },
+                        )
+                        return
                     await self.client.fail(
                         task_id,
                         "this attempt emitted tool-call-like text that could not be "
-                        "parsed into any granted tool, twice — nothing was executed. "
-                        "Retry with a simpler spec, or check whether "
+                        "parsed into any granted tool in two generation rounds — "
+                        "nothing was executed and no salvageable code block was "
+                        "found. Retry with a simpler text-only spec, or check whether "
                         f"{self.backend.model} handles tool calling reliably.",
                         result={
                             "tokens": result.total_tokens,
@@ -415,6 +453,20 @@ class Harness:
                             "files were written to the workspace — pull it from the "
                             "text or re-dispatch demanding file_write]"
                         )
+                elif (
+                    self.tools.enabled
+                    and not files
+                    and payload["tool_log"]
+                    and all(e["error"] for e in payload["tool_log"])
+                ):
+                    # Every tool call failed and nothing shipped: 'completed' state
+                    # alone would read as success. Make the blockage visible.
+                    payload["all_tools_failed"] = True
+                    payload["text"] += (
+                        "\n\n[worker warning: every tool call this task attempted "
+                        "failed (see tool_log) and no files were produced — treat "
+                        "this as blocked, not done]"
+                    )
                 elif self.tools.enabled and not files and not payload["tool_log"]:
                     # No tools ran, no files, no code — a bare "done" claim. The hub
                     # cannot know if that is legitimate (a pure-text answer) or a
@@ -639,6 +691,10 @@ def _extract_lone_code_block(text: str) -> tuple[str, str] | None:
     if len(blocks) != 1:
         return None
     lang, body = blocks[0]
+    if _looks_like_unexecuted_tool_calls(body):
+        # The lone block IS the malformed tool call — that is a failure artifact,
+        # not a deliverable.
+        return None
     before = text[: text.index("```")]
     named = re.findall(r"[`\s(]([\w./-]+\.[a-z]{1,4})[`\s):,]", before + " ")
     if named:

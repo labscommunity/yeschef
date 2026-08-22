@@ -230,6 +230,13 @@ class ToolExecutor:
     def _resolve(self, raw: str) -> Path:
         if self.root is None:
             raise ValueError("file tools need [tools] file_root to be set")
+        if raw.startswith("~"):
+            # Treating '~' as a literal filename produced opaque FileNotFoundErrors;
+            # say what is actually possible instead.
+            raise ValueError(
+                f"'~' is not expanded here — your workspace is {self.root}; "
+                "use paths relative to it"
+            )
         target = (self.root / raw).resolve() if not Path(raw).is_absolute() else Path(raw).resolve()
         if target != self.root and self.root not in target.parents:
             raise ValueError(f"path escapes the agent workspace ({self.root})")
