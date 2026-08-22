@@ -8,16 +8,14 @@ farmteam turns them into a roster Claude Code can actually manage: dispatch a ta
 working, check on it whenever — from any session, days later. Your ace does the
 thinking; the farm team does the reps.
 
-![Two local models plan this exact demo while the human interjects mid-conversation](docs/demo.gif)
+![One prompt in Claude Code: dispatch to a local worker, the watcher subagent appears in the panel, and the finished files return on their own](docs/claude-demo.gif)
 
-*Real conversation, not a script. Two local models on one GPU box argue about what this
-very demo should show — until the operator cuts in and overrules them both. Every turn is
-labelled with the model and machine behind it. The transcript ships in this repo, so after
-install you can watch the identical conversation yourself:*
-
-```bash
-farmteam replay docs/demo.json
-```
+*One prompt, live session: Claude shows the roster — every worker's model and machine
+(`builder · ollama/qwen2.5:7b-instruct @ miner`) — dispatches the buildout, and spawns
+the `farmteam-watcher` subagent, visible in the native panel like any subagent. The
+session comes straight back to you; when the local worker finishes, the watcher returns
+on its own, lands the files in `./site`, and Claude reviews the local model's work
+against the spec. No polling, no "is it done yet."*
 
 ```
    Claude Code ──MCP/HTTP──▶ ┌─────────┐ ◀──REST+SSE── worker ──▶ Ollama  (office-mac)
@@ -51,16 +49,18 @@ That's the whole setup. Single-box demo: run both on one machine — `join` need
 flags at all. `farmteam doctor` diagnoses anything that's off; `--detach`/`down`/`ps`
 run it all in the background from one terminal. macOS, Linux, and Windows.
 
+**Or let Claude Code install it.** This repo is also a Claude Code plugin:
+
+```
+/plugin marketplace add labscommunity/farmteam
+/plugin install farmteam@farmteam
+```
+
+Then say "set up farmteam" (or run `/farmteam:setup`) and Claude installs the CLI,
+starts the hub, wires the MCP connection, and hands you the worker join command. The
+plugin also ships the skill and the `farmteam-watcher` subagent automatically.
+
 ## What it feels like
-
-![One prompt in Claude Code: dispatch to a local worker, the watcher subagent appears in the panel, and the finished files return on their own](docs/claude-demo.gif)
-
-*One prompt, live session: Claude shows the roster — every worker's model and machine
-(`builder · ollama/qwen2.5:7b-instruct @ miner`) — dispatches the buildout, and spawns
-the `farmteam-watcher` subagent, visible in the native panel like any subagent. The
-session comes straight back to you; when the local worker finishes, the watcher returns
-on its own, lands the files in `./site`, and Claude reviews the local model's work
-against the spec. No polling, no "is it done yet."*
 
 From Claude Code (wired automatically by `up`):
 
@@ -90,6 +90,13 @@ The dialogue is the part you have to see: two of your machines, in different col
 working a problem — and you can type into the middle of it. Every room is **bounded by
 construction** (message caps, token budgets, idle timeouts, stop phrases — enforced by
 the hub, not by hoping), so nothing loops forever.
+
+![Two local models plan this exact demo while the human interjects mid-conversation](docs/demo.gif)
+
+*Real conversation, not a script. Two local models on one GPU box argue about what this
+demo should show — until the operator cuts in and overrules them both. The transcript
+ships in this repo; after install, watch the identical conversation yourself with
+`farmteam replay docs/demo.json`.*
 
 ## Dispatch a buildout, get the files back
 

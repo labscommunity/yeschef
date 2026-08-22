@@ -1,0 +1,13 @@
+{
+  "name": "farmteam",
+  "description": "Give Claude Code a farm team: local models on your own hardware that take the grunt work, return the files they build, and never hit a rate limit.",
+  "version": "0.1.0",
+  "author": {
+    "name": "farmteam contributors",
+    "url": "https://github.com/labscommunity/farmteam"
+  },
+  "homepage": "https://github.com/labscommunity/farmteam",
+  "repository": "https://github.com/labscommunity/farmteam",
+  "license": "MIT",
+  "keywords": ["local-llm", "ollama", "vllm", "agents", "task-dispatch", "self-hosted"]
+}
