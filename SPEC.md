@@ -39,7 +39,7 @@ farmteam/
 │   ├── hub/          # FastMCP server + agent-facing HTTP/SSE API + SQLite store
 │   ├── sdk/          # Python client library — THE protocol contract
 │   ├── agent/        # reference harness daemon (uses sdk/)
-│   │   └── backends/ # anthropic_compat, openai_compat, tahoma
+│   │   └── backends/ # anthropic_compat, openai_compat (local or cloud), tahoma, cli
 │   ├── tools/        # opt-in worker-side tool executor (shell, file, web_fetch)
 │   └── cli.py        # `farmteam` command
 ├── SPEC.md
@@ -200,7 +200,7 @@ One TOML config per agent:
 name = "miner-qwen"
 hub = "http://mini.local:8787"
 [backend]
-type = "openai_compat"            # anthropic_compat | openai_compat | tahoma
+type = "openai_compat"            # anthropic_compat | openai_compat | tahoma | cli
 base_url = "http://localhost:8000/v1"
 model = "qwen3-8b"
 max_context_tokens = 32768

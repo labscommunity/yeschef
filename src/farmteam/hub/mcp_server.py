@@ -82,7 +82,8 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
     mcp = FastMCP(
         name="farmteam",
         instructions=(
-            "Dispatch tasks to your farm team — local AI agents on your own hardware — and "
+            "Dispatch tasks to your farm team — AI agents you run yourself, usually local "
+            "models on your own hardware — and "
             "hold multi-turn conversations with them. submit_task returns immediately with a "
             "task id; call "
             "task_status(id) at any time, from any session, to check on it. Use send_message "

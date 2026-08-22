@@ -1,7 +1,7 @@
 # Using farmteam from an agent
 
-This is the reference for an AI agent (a Claude Code session, or any MCP client) that
-wants to use the fleet. For the short, always-loaded version, install the skill:
+This is the reference for an AI agent (a Claude Code or Codex session, or any MCP
+client) that wants to use the fleet. For the short, always-loaded version, install the skill:
 
 ```bash
 farmteam install-skill            # into this project's .claude/skills/

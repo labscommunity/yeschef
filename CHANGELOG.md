@@ -17,5 +17,8 @@ Initial release.
   return on their own), and MCP wiring.
 - Codex support: `farmteam mcp-proxy` bridges the hub's tools to Codex over stdio,
   `farmteam up` auto-wires Codex's config.toml, and a `codex exec` worker example.
+- Cloud-provider workers: `farmteam join --provider openrouter|openai|groq|together|
+  deepseek|fireworks` (or `--base-url` + `--api-key-env` for any endpoint); keys read
+  from the environment. Mix cloud and local workers on one hub.
 - Security defaults: per-agent bearer tokens, registration gating, scoped reads,
   bounded rooms, jailed and allowlisted worker tools.

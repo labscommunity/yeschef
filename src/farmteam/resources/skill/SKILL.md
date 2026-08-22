@@ -12,9 +12,11 @@ description: >-
 
 # Using your farm team
 
-The `farmteam` MCP server connects this session to local AI agents running on the
-user's own hardware. You dispatch work to them and converse with them; they run on local
-models (Ollama, vLLM, and similar) and cost no Anthropic tokens.
+The `farmteam` MCP server connects this session to AI agents the user runs themselves —
+usually local models on their own hardware (Ollama, vLLM, and similar), sometimes a
+cheap cloud provider. Either way they cost no Anthropic tokens and run outside this
+session, so delegating to them frees your context and your rate limit. You dispatch work
+to them and converse with them.
 
 ## When to reach for it
 

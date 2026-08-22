@@ -8,8 +8,8 @@
     {
       "name": "farmteam",
       "source": ".",
-      "description": "Give Claude Code a farm team: local models on your own hardware that take the grunt work, return the files they build, and never hit a rate limit."
+      "description": "farmteam \u2014 the farm team for Claude Code and Codex: dispatch work to local models (or a cloud provider) on your own hardware."
     }
   ],
-  "description": "farmteam \u2014 the farm team for Claude Code: dispatch work to local models on your own hardware."
+  "description": "farmteam \u2014 the farm team for Claude Code and Codex: dispatch work to local models (or a cloud provider) on your own hardware."
 }
