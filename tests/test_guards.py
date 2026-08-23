@@ -12,9 +12,9 @@ import httpx
 import pytest
 from fastmcp import Client
 
-from farmteam.hub import HubConfig, Store
-from farmteam.hub.mcp_server import build_mcp
-from farmteam.models import (
+from yeschef.hub import HubConfig, Store
+from yeschef.hub.mcp_server import build_mcp
+from yeschef.models import (
     DEFAULT_MAX_ROOM_MESSAGES,
     AgentKind,
     HubError,
@@ -238,7 +238,7 @@ async def test_open_mode_still_works_with_no_tokens_configured() -> None:
 
 def test_the_sweep_hands_on_a_floor_its_holder_cannot_use(fleet: Store) -> None:
     """A dropped grant or a dead agent must not freeze a dialogue until idle timeout."""
-    from farmteam.models import TurnPolicy
+    from yeschef.models import TurnPolicy
 
     room = fleet.create_room(
         "dialogue",
@@ -259,7 +259,7 @@ def test_the_sweep_hands_on_a_floor_its_holder_cannot_use(fleet: Store) -> None:
 
 def test_an_unseeded_ring_still_enforces_turns(fleet: Store) -> None:
     """A room built before its agents registered must not skip floor control."""
-    from farmteam.models import TurnPolicy
+    from yeschef.models import TurnPolicy
 
     room = fleet.create_room(
         "dialogue",
@@ -279,7 +279,7 @@ def test_an_unseeded_ring_still_enforces_turns(fleet: Store) -> None:
 
 
 def test_yield_floor_passes_the_turn_without_speaking(fleet: Store) -> None:
-    from farmteam.models import TurnPolicy
+    from yeschef.models import TurnPolicy
 
     room = fleet.create_room(
         "dialogue",
@@ -331,7 +331,7 @@ def test_the_goal_seed_may_name_the_stop_phrase_without_triggering_it(fleet: Sto
 def test_the_sweep_renudges_an_online_holder_in_a_silent_room(fleet: Store) -> None:
     """A floor grant delivered before the seed message existed is unusable; the sweep
     must re-send it rather than leave the dialogue wedged at birth."""
-    from farmteam.models import EventKind, TurnPolicy
+    from yeschef.models import EventKind, TurnPolicy
 
     room = fleet.create_room(
         "dialogue",
@@ -364,7 +364,7 @@ def test_the_sweep_renudges_an_online_holder_in_a_silent_room(fleet: Store) -> N
 
 
 def test_room_dict_exposes_the_floor_holder(fleet: Store) -> None:
-    from farmteam.models import TurnPolicy
+    from yeschef.models import TurnPolicy
 
     room = fleet.create_room(
         "dialogue",
@@ -397,7 +397,7 @@ def test_only_agents_can_trigger_the_stop_phrase(fleet: Store) -> None:
 async def test_an_agent_reclaims_its_name_after_a_restart(tmp_path) -> None:
     """The anti-hijack rule must not lock a worker out of its own identity: a restart
     presents the token it persisted, and re-registration succeeds."""
-    from farmteam.sdk import AgentClient
+    from yeschef.sdk import AgentClient
 
     async with live_hub() as hub:
         token_file = tmp_path / "worker.token"
@@ -424,8 +424,8 @@ async def test_a_silent_event_stream_is_treated_as_dead() -> None:
     that wedge left a live worker heartbeating while deaf to every task announcement."""
     import asyncio as aio
 
-    from farmteam.sdk import AgentClient
-    from farmteam.sdk import client as sdk_client
+    from yeschef.sdk import AgentClient
+    from yeschef.sdk import client as sdk_client
 
     async def silent_server(reader, writer):
         await reader.read(1024)  # accept the request, say the bare minimum, go quiet

@@ -13,14 +13,14 @@ from pathlib import Path
 import pytest
 from fastmcp import Client
 
-from farmteam.agent import AgentConfig, Harness
-from farmteam.agent.backends import build_backend
-from farmteam.agent.backends.cli import CliBackend
-from farmteam.hub import HubConfig, Store
-from farmteam.hub.events import EventBus
-from farmteam.hub.mcp_server import build_mcp
-from farmteam.models import HubError
-from farmteam.tools.executor import ToolsConfig
+from yeschef.agent import AgentConfig, Harness
+from yeschef.agent.backends import build_backend
+from yeschef.agent.backends.cli import CliBackend
+from yeschef.hub import HubConfig, Store
+from yeschef.hub.events import EventBus
+from yeschef.hub.mcp_server import build_mcp
+from yeschef.models import HubError
+from yeschef.tools.executor import ToolsConfig
 
 from .live import live_hub
 from .test_integration import start_agent, stop_agent, wait_for

@@ -1,4 +1,4 @@
-"""Client library for the farmteam hub — the protocol contract.
+"""Client library for the yeschef hub — the protocol contract.
 
 Anything embedding `AgentClient` becomes a first-class agent: it can join rooms, hold
 multi-turn conversations, and claim and work tasks. Depends on httpx only.

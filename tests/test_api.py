@@ -10,10 +10,10 @@ import httpx
 import pytest
 from asgi_lifespan import LifespanManager
 
-from farmteam.hub import HubConfig, Store, create_app
-from farmteam.hub.events import EventBus
-from farmteam.models import AgentKind, TaskState
-from farmteam.sdk import AgentClient
+from yeschef.hub import HubConfig, Store, create_app
+from yeschef.hub.events import EventBus
+from yeschef.models import AgentKind, TaskState
+from yeschef.sdk import AgentClient
 
 from .live import live_hub
 

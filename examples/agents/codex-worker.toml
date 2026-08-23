@@ -1,21 +1,21 @@
-# A worker whose engine is the Codex CLI running against a LOCAL model.
+# A cook whose engine is the Codex CLI running against a LOCAL model.
 #
-# Same shape as the claude-code worker: the cli backend hands the whole task to
+# Same shape as the claude-code cook: the cli backend hands the whole task to
 # `codex exec`, which brings its own agentic loop and file editing. Point Codex at a
 # local OpenAI-compatible server (vLLM, Ollama's /v1, LM Studio) so it costs no API
 # tokens. Files the run produces in its task workspace ship back to the hub.
 #
-#   farmteam agent run -c examples/agents/codex-worker.toml
+#   yeschef agent run -c examples/agents/codex-worker.toml
 #
 # Verify your Codex version's exec flags with `codex exec --help`; adjust below.
 
-name = "mechanic"
+name = "prep"
 hub = "http://hub-host:8787"
 tags = ["tier:build", "agent:codex"]
 
 [backend]
 type = "cli"
-model = "codex/qwen2.5-coder:14b"       # label shown on the roster
+model = "codex/qwen2.5-coder:14b"       # label shown on the line
 command = ["codex", "exec", "--full-auto", "{prompt}"]
 timeout_s = 1800
 
@@ -27,7 +27,7 @@ OPENAI_API_KEY = "local"
 
 [persona]
 system_prompt = """
-You are {name}, a build agent on the farm team. You receive complete build tasks.
+You are {name}, a line cook in the kitchen. You receive complete build tasks.
 Create real, working files in your current directory; verify your work; then reply
 with a short summary of what you built.
 """

@@ -2,24 +2,24 @@
 <!--
   Hub service for a macOS hub box.
 
-    cp examples/deploy/dev.farmteam.hub.plist ~/Library/LaunchAgents/
-    launchctl load ~/Library/LaunchAgents/dev.farmteam.hub.plist
+    cp examples/deploy/dev.yeschef.hub.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/dev.yeschef.hub.plist
 
   Bind to the LAN/Tailscale interface only. Never expose this through a Tailscale
-  funnel: any caller reaching it can dispatch work to every node on the fleet.
+  funnel: any caller reaching it can dispatch work to every node on the kitchen.
 -->
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>dev.farmteam.hub</string>
+    <string>dev.yeschef.hub</string>
 
     <key>ProgramArguments</key>
     <array>
         <string>/opt/homebrew/bin/uv</string>
         <string>run</string>
         <string>--directory</string>
-        <string>/path/to/farmteam</string>
-        <string>farmteam</string>
+        <string>/path/to/yeschef</string>
+        <string>yeschef</string>
         <string>hub</string>
         <string>serve</string>
         <string>--host</string>
@@ -31,7 +31,7 @@
     <key>EnvironmentVariables</key>
     <dict>
         <key>CASCADIA_TASKS_DB</key>
-        <string>/Users/YOU/.farmteam/hub.db</string>
+        <string>/Users/YOU/.yeschef/hub.db</string>
         <!-- Set these to require a token; leave unset for an open LAN hub.
         <key>CASCADIA_TASKS_ADMIN_TOKEN</key>
         <string>...</string>
@@ -46,8 +46,8 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/Users/YOU/.farmteam/hub.log</string>
+    <string>/Users/YOU/.yeschef/hub.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/YOU/.farmteam/hub.err.log</string>
+    <string>/Users/YOU/.yeschef/hub.err.log</string>
 </dict>
 </plist>

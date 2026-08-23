@@ -20,7 +20,7 @@ from .backends import Turn, build_backend
 from .backends.base import Backend, ToolResult
 from .config import AgentConfig
 
-log = logging.getLogger("farmteam.agent")
+log = logging.getLogger("yeschef.agent")
 
 
 def agent_token_path(name: str):
@@ -70,7 +70,7 @@ class Harness:
         tags = list(self.config.tags)
         if not any(t.startswith("tools:") for t in tags):
             # Specs that demand actions a worker cannot perform (run this, fetch that)
-            # stall into input_required; the roster should say what is possible.
+            # stall into input_required; the line should say what is possible.
             granted = "+".join(self.config.tools.allow) if self.tools.enabled else "none"
             tags.append(f"tools:{granted}")
         if not any(t.startswith("max_tokens:") for t in tags):

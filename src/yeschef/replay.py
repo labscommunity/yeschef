@@ -118,7 +118,7 @@ def _render_header(console, payload: dict, workers, colors, options: ReplayOptio
 
     if goal and workers:
         flags = f' [dim]--goal "{_truncate(goal, 28)}"[/dim]'
-        console.print(f"[dim]$[/dim] [bold]farmteam dialogue {' '.join(workers)}[/bold]{flags}")
+        console.print(f"[dim]$[/dim] [bold]yeschef dialogue {' '.join(workers)}[/bold]{flags}")
     console.print()
 
     participants = payload.get("participants", {})

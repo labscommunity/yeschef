@@ -5,8 +5,8 @@ from collections.abc import AsyncIterator, Iterator
 
 import pytest
 
-from farmteam.hub import HubConfig, Store
-from farmteam.hub.events import EventBus
+from yeschef.hub import HubConfig, Store
+from yeschef.hub.events import EventBus
 
 
 @pytest.fixture

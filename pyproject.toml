@@ -1,5 +1,5 @@
 [project]
-name = "farmteam"
+name = "yeschef"
 version = "0.1.0"
 description = "The farm team for Claude Code and Codex: local models on your own hardware that take the grunt work, return the files they build, and never hit a rate limit"
 readme = "README.md"
@@ -25,15 +25,15 @@ dev = [
 ]
 
 [project.scripts]
-farmteam = "farmteam.cli:main"
-cascadia-tasks = "farmteam.cli:legacy_main"
+yeschef = "yeschef.cli:main"
+cascadia-tasks = "yeschef.cli:legacy_main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/farmteam"]
+packages = ["src/yeschef"]
 
 [tool.ruff]
 line-length = 100

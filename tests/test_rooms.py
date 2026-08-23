@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from farmteam.hub import Store
-from farmteam.models import AgentKind, HubError, RoomPolicy, TurnPolicy
+from yeschef.hub import Store
+from yeschef.models import AgentKind, HubError, RoomPolicy, TurnPolicy
 
 
 @pytest.fixture

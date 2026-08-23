@@ -38,6 +38,6 @@ def build_hub(config: HubConfig | None = None) -> tuple[FastAPI, Store]:
 
 
 def app_factory() -> FastAPI:
-    """Entry point for `uvicorn farmteam.hub.app:app_factory --factory`."""
+    """Entry point for `uvicorn yeschef.hub.app:app_factory --factory`."""
     app, _ = build_hub()
     return app

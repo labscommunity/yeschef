@@ -13,12 +13,12 @@ from collections.abc import AsyncIterator
 import pytest
 from fastmcp import Client
 
-from farmteam.agent import AgentConfig, Harness
-from farmteam.agent.backends.base import Turn
-from farmteam.hub import HubConfig
-from farmteam.hub.mcp_server import build_mcp
-from farmteam.models import ReplyWhen
-from farmteam.tools.executor import ToolsConfig
+from yeschef.agent import AgentConfig, Harness
+from yeschef.agent.backends.base import Turn
+from yeschef.hub import HubConfig
+from yeschef.hub.mcp_server import build_mcp
+from yeschef.models import ReplyWhen
+from yeschef.tools.executor import ToolsConfig
 
 from .live import LiveHub, live_hub
 from .mock_backend import MockBackend, tool_then_answer
@@ -460,7 +460,7 @@ async def test_agent_delegates_a_subtask_to_another_agent(fleet) -> None:
     hub, claude = fleet
     worker = await start_agent(hub, "worker", lambda s, t: "subtask done", tags=["tier:fast"])
     try:
-        from farmteam.sdk import AgentClient
+        from yeschef.sdk import AgentClient
 
         async with AgentClient(hub.url, "coordinator") as coordinator:
             await coordinator.register(tags=["tier:coordinator"])
@@ -593,7 +593,7 @@ async def test_a_model_that_only_describes_tool_calls_fails_loudly(fleet) -> Non
 async def test_a_summary_that_mentions_tool_calls_is_not_flagged(fleet) -> None:
     """The unexecuted-tool-call guard must not fire when tools genuinely ran: models
     often describe what they did, and failing that work would be worse than the bug."""
-    from farmteam.agent.backends.base import ChatResult, ToolCall
+    from yeschef.agent.backends.base import ChatResult, ToolCall
 
     state = {"used": False}
 

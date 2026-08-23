@@ -1,15 +1,15 @@
 {
-  "name": "farmteam",
+  "name": "yeschef",
   "owner": {
-    "name": "farmteam contributors",
-    "url": "https://github.com/labscommunity/farmteam"
+    "name": "yeschef contributors",
+    "url": "https://github.com/labscommunity/yeschef"
   },
   "plugins": [
     {
-      "name": "farmteam",
+      "name": "yeschef",
       "source": ".",
-      "description": "farmteam \u2014 the farm team for Claude Code and Codex: dispatch work to local models (or a cloud provider) on your own hardware."
+      "description": "yeschef \u2014 a kitchen for Claude Code and Codex: fire work to local-model cooks (or a cloud provider) on your own hardware."
     }
   ],
-  "description": "farmteam \u2014 the farm team for Claude Code and Codex: dispatch work to local models (or a cloud provider) on your own hardware."
+  "description": "yeschef \u2014 a kitchen for Claude Code and Codex: fire work to local-model cooks (or a cloud provider) on your own hardware."
 }

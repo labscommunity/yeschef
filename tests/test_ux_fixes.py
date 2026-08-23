@@ -12,12 +12,12 @@ import contextlib
 
 from fastmcp import Client
 
-from farmteam.agent import AgentConfig
-from farmteam.agent.backends.base import ChatResult
-from farmteam.agent.config import ToolsConfig
-from farmteam.agent.harness import Harness, _parse_text_tool_calls
-from farmteam.hub import HubConfig
-from farmteam.hub.mcp_server import build_mcp
+from yeschef.agent import AgentConfig
+from yeschef.agent.backends.base import ChatResult
+from yeschef.agent.config import ToolsConfig
+from yeschef.agent.harness import Harness, _parse_text_tool_calls
+from yeschef.hub import HubConfig
+from yeschef.hub.mcp_server import build_mcp
 
 from .live import live_hub
 from .mock_backend import MockBackend
@@ -257,7 +257,7 @@ def test_unknown_config_keys_warn(capsys) -> None:
 
 
 def test_selector_union_matches_any_part() -> None:
-    from farmteam.models import Agent, AgentKind
+    from yeschef.models import Agent, AgentKind
 
     a = Agent(name="scout", kind=AgentKind.WORKER, tags=["tier:fast"])
     assert a.matches("tier:fast|tier:build")
@@ -266,7 +266,7 @@ def test_selector_union_matches_any_part() -> None:
 
 
 def test_summary_carries_age_ran_and_files() -> None:
-    from farmteam.models import Task, TaskState, now
+    from yeschef.models import Task, TaskState, now
 
     t = Task(
         id="task_x",
@@ -475,7 +475,7 @@ async def test_task_files_include_content_lands_everything_in_one_call() -> None
 
 
 def test_lone_code_block_extraction_names_from_context() -> None:
-    from farmteam.agent.harness import _extract_lone_code_block
+    from yeschef.agent.harness import _extract_lone_code_block
 
     got = _extract_lone_code_block(
         "Here is the corrected `parser.py`:\n```python\nx = 1\n```\nDone."
@@ -552,7 +552,7 @@ async def test_wait_more_hint_on_capped_done_wait() -> None:
 
 def test_worker_advertises_tool_roster_tag() -> None:
     """Registration tags carry tools:<granted> so specs never demand the impossible."""
-    from farmteam.agent.config import ToolsConfig as TC
+    from yeschef.agent.config import ToolsConfig as TC
 
     cfg = AgentConfig(
         name="x",
@@ -816,7 +816,7 @@ async def test_all_tool_failures_flag_blocked(tmp_path) -> None:
     def respond(system, turns):
         # native tool call to an escaping path, then a polite report
         if len(turns) == 1:
-            from farmteam.agent.backends.base import ToolCall as TC
+            from yeschef.agent.backends.base import ToolCall as TC
 
             return ChatResult(
                 text="",
@@ -948,7 +948,7 @@ async def test_list_tasks_running_alias_and_state_enum_error() -> None:
 
 
 def test_extraction_prefers_spec_named_file() -> None:
-    from farmteam.agent.harness import _extract_lone_code_block
+    from yeschef.agent.harness import _extract_lone_code_block
 
     got = _extract_lone_code_block(
         "Result:\n```python\nx = 1\n```",
@@ -977,7 +977,7 @@ async def test_flags_ride_in_summaries() -> None:
 
 
 async def test_input_required_ttl_fails_with_the_question() -> None:
-    from farmteam.models import INPUT_REQUIRED_TTL_S
+    from yeschef.models import INPUT_REQUIRED_TTL_S
 
     async with live_hub() as hub:
         hub.store.register_agent("stuck", kind="worker", node="n", backend="b", tags=[])
@@ -1083,7 +1083,7 @@ async def test_wait_room_never_withholds_messages() -> None:
 
 
 async def test_stop_phrase_needs_every_worker_to_have_spoken() -> None:
-    from farmteam.models import RoomPolicy
+    from yeschef.models import RoomPolicy
 
     async with live_hub() as hub:
         hub.store.register_agent("w1", kind="worker", node="n", backend="b", tags=[])
@@ -1103,7 +1103,7 @@ async def test_stop_phrase_needs_every_worker_to_have_spoken() -> None:
 
 
 async def test_operator_posts_do_not_burn_room_budget() -> None:
-    from farmteam.models import RoomPolicy
+    from yeschef.models import RoomPolicy
 
     async with live_hub() as hub:
         hub.store.register_agent("w3", kind="worker", node="n", backend="b", tags=[])
@@ -1298,7 +1298,7 @@ async def test_unclaimed_timeout_names_the_cause() -> None:
 
 
 def test_wildcard_selector_matches_any_worker() -> None:
-    from farmteam.models import Agent, AgentKind
+    from yeschef.models import Agent, AgentKind
 
     a = Agent(name="anyone", kind=AgentKind.WORKER, tags=[])
     assert a.matches("*")
@@ -1306,7 +1306,7 @@ def test_wildcard_selector_matches_any_worker() -> None:
 
 
 def test_agent_dict_carries_heartbeat_age() -> None:
-    from farmteam.models import Agent, AgentKind, now
+    from yeschef.models import Agent, AgentKind, now
 
     a = Agent(name="x", kind=AgentKind.WORKER, last_seen=now() - 12)
     assert 11 <= a.to_dict()["heartbeat_age_s"] <= 14
@@ -1373,7 +1373,7 @@ async def test_worker_self_defaults_to_text_mode_after_tool_failure(tmp_path) ->
 
 
 def test_extraction_preserves_dotfiles_and_prefers_output_name() -> None:
-    from farmteam.agent.harness import _extract_lone_code_block
+    from yeschef.agent.harness import _extract_lone_code_block
 
     # leading dot survives (was eaten by lstrip)
     got = _extract_lone_code_block(
@@ -1412,7 +1412,7 @@ async def test_cancel_provenance_carries_reason() -> None:
 
 
 async def test_duplicate_restatement_archives_early() -> None:
-    from farmteam.models import RoomPolicy
+    from yeschef.models import RoomPolicy
 
     async with live_hub() as hub:
         hub.store.register_agent("dw", kind="worker", node="n", backend="b", tags=[])
@@ -1483,7 +1483,7 @@ async def test_fleet_stats_carries_caveat_and_per_worker() -> None:
 
 
 def test_multi_file_text_extraction() -> None:
-    from farmteam.agent.harness import _extract_pathed_blocks
+    from yeschef.agent.harness import _extract_pathed_blocks
 
     text = (
         "Here are the files:\n"
@@ -1498,7 +1498,7 @@ def test_multi_file_text_extraction() -> None:
 
 
 def test_extraction_writes_are_jailed(tmp_path) -> None:
-    from farmteam.agent.harness import _safe_extract_write
+    from yeschef.agent.harness import _safe_extract_write
 
     ws = tmp_path / "task_x"
     ws.mkdir()
@@ -1507,16 +1507,16 @@ def test_extraction_writes_are_jailed(tmp_path) -> None:
     assert (ws / "sub/ok.py").read_text() == "x=1\n"
     # traversal + absolute are refused, nothing written outside
     assert _safe_extract_write(ws, "../../escape.py", "bad") is None
-    assert _safe_extract_write(ws, "/tmp/farmteam-abs-escape.py", "bad") is None
+    assert _safe_extract_write(ws, "/tmp/yeschef-abs-escape.py", "bad") is None
     assert not (tmp_path / "escape.py").exists()
     from pathlib import Path as _P
-    assert not _P("/tmp/farmteam-abs-escape.py").exists()
+    assert not _P("/tmp/yeschef-abs-escape.py").exists()
 
 
 def test_stop_phrase_floor_does_not_bypass_message_cap() -> None:
     import asyncio as _a
 
-    from farmteam.models import RoomPolicy
+    from yeschef.models import RoomPolicy
 
     async def _run():
         async with live_hub() as hub:
@@ -1595,7 +1595,7 @@ def test_dedupe_concurrent_collision_returns_winner_not_500(store) -> None:
 def test_reassign_then_stale_complete_is_rejected(store) -> None:
     """After a task is reassigned, the ORIGINAL worker's completion must not land
     (holder-guarded _finish) — otherwise it corrupts attribution."""
-    from farmteam.models import HubError as _HubError
+    from yeschef.models import HubError as _HubError
 
     store.register_agent("old", kind="worker", node="n", backend="b", tags=[])
     store.register_agent("new", kind="worker", node="n", backend="b", tags=[])

@@ -1,9 +1,9 @@
-# A worker backed by Ollama. `farmteam join` builds this for you automatically —
+# A cook backed by Ollama. `yeschef join` builds this for you automatically —
 # reach for a config file only when you want to pin a persona, tags, or tools.
 #
-#   farmteam agent run -c examples/agents/ollama-worker.toml
+#   yeschef agent run -c examples/agents/ollama-worker.toml
 
-name = "fastball"
+name = "grill"
 hub = "http://hub-host:8787"
 tags = ["tier:fast", "ctx:32k"]
 
@@ -17,7 +17,7 @@ timeout_s = 600
 
 [persona]
 system_prompt = """
-You are fastball, a fast local agent on the farm team. You handle summarization,
+You are grill, a fast local cook in the kitchen. You handle summarization,
 extraction, classification, and quick reasoning. Be concise and concrete: answer
 with the result, not a description of how you would get it.
 """

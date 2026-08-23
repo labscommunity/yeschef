@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from farmteam.agent.backends.base import ChatResult, ToolCall, Turn
+from yeschef.agent.backends.base import ChatResult, ToolCall, Turn
 
 
 class MockBackend:

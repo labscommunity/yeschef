@@ -6,10 +6,10 @@ import json
 
 from rich.console import Console
 
-from farmteam.hub import Store
-from farmteam.hub.events import EventBus
-from farmteam.models import AgentKind
-from farmteam.replay import ReplayOptions, replay, save_transcript, transcript_payload
+from yeschef.hub import Store
+from yeschef.hub.events import EventBus
+from yeschef.models import AgentKind
+from yeschef.replay import ReplayOptions, replay, save_transcript, transcript_payload
 
 
 def build_room(store: Store) -> tuple[dict, list[dict], list[dict]]:
@@ -102,7 +102,7 @@ def test_lifetime_stats_come_from_the_durable_record() -> None:
         assert stats["tasks_completed"] == 1
         assert stats["work_seconds"] >= 0
         line = store.format_stats(stats)
-        assert "1 tasks completed" in line and "local compute" in line
+        assert "1 tickets cooked" in line and "local compute" in line
         assert stats["task_tokens"] == 500  # task tokens tracked distinctly from rooms
     finally:
         store.close()
@@ -150,5 +150,5 @@ def test_the_header_shows_the_command_that_produced_the_dialogue() -> None:
     console = Console(record=True, width=100)
     replay(payload, console, ReplayOptions(no_delay=True))
     output = console.export_text()
-    assert "farmteam dialogue ace scout" in output
+    assert "yeschef dialogue ace scout" in output
     assert "pick a cache eviction policy" in output

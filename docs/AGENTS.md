@@ -1,16 +1,16 @@
-# Using farmteam from an agent
+# Using yeschef from an agent
 
 This is the reference for an AI agent (a Claude Code or Codex session, or any MCP
-client) that wants to use the fleet. For the short, always-loaded version, install the skill:
+client) that wants to use the kitchen. For the short, always-loaded version, install the skill:
 
 ```bash
-farmteam install-skill            # into this project's .claude/skills/
-farmteam install-skill --user     # into ~/.claude/skills/ for every project
+yeschef install-skill            # into this project's .claude/skills/
+yeschef install-skill --user     # into ~/.claude/skills/ for every project
 ```
 
-## What the fleet is
+## What the kitchen is
 
-A `farmteam` hub connects your session to **local AI agents** running on the user's
+A `yeschef` hub connects your session to **local AI agents** running on the user's
 own machines against local models. You dispatch work to them over MCP; they cost no
 Anthropic tokens. The hub is durable — a task you submit is checkable from any session at
 any later time.
@@ -26,7 +26,7 @@ any later time.
 | `list_tasks(state?)` / `cancel_task(task_id)` | survey and stop work |
 | `provide_input(task_id, message)` | answer an agent that parked a task on `input_required` |
 | `wait_task(task_id, wait_s≤60)` | wait efficiently for a state change (one call/min, early return) |
-| `task_files(task_id)` / `task_file(task_id, path)` | list and pull the files a task produced on its worker |
+| `task_files(task_id)` / `task_file(task_id, path)` | list and pull the files a task produced on its cook |
 | `send_message(to, message)` / `fetch_messages(wait_s?)` | 1:1 multi-turn |
 | `create_room(topic, participants, …)` / `post(room, message)` | group conversation |
 | `start_dialogue(participants, goal, …)` | agents converse autonomously; you observe |
@@ -36,7 +36,7 @@ any later time.
 ## Deciding what to delegate
 
 Delegate high-volume, mechanical, or long-running work; keep judgment and final synthesis
-on the main model. The strong pattern is **fan out to local agents, verify the results
+on the main model. The strong pattern is **fan out to cooks, verify the results
 yourself**. Don't delegate when a single high-quality answer matters more than saving
 tokens — local models are smaller.
 
@@ -45,9 +45,9 @@ tokens — local models are smaller.
 - `assignee="closer"` — a specific agent.
 - `selector="tier:reasoning"` — any agent carrying that tag; exactly one claims it.
 
-Tags are per-fleet. Run `list_agents()` to see what this deployment actually offers
+Tags are per-kitchen. Run `list_agents()` to see what this deployment actually offers
 (commonly `tier:fast`, `tier:reasoning`, `node:<host>`). The operator can document their
-fleet's tiers in a project `CLAUDE.md`.
+kitchen's tiers in a project `CLAUDE.md`.
 
 ## Async discipline
 
@@ -58,12 +58,12 @@ polls.
 
 ## The buildout pattern
 
-For "spec it here, build it there": dispatch to a worker with a workspace (file tools
+For "spec it here, build it there": dispatch to a cook with a workspace (file tools
 or a `cli` coding-agent backend), then bring the results home:
 
 ```
 submit_task(title="landing page", spec=<the design spec>, assignee="carpenter")
-# spawn farmteam-watcher in the background with the task id — it appears in the
+# spawn yeschef-expediter in the background with the task id — it appears in the
 # subagent panel, waits via wait_task, and writes returned files into the project.
 # Or do it inline:
 wait_task("task_ab12cd")             # repeat while not done

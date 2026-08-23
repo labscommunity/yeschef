@@ -6,9 +6,9 @@ placement drove the big repos; Show HN is the day-2 amplifier, not the engine.
 
 ## 0. Hard prerequisites (everything below needs these)
 
-- [ ] **Make the repo public**: `gh repo edit labscommunity/farmteam --visibility public --accept-visibility-change-consequences`
-- [ ] **Publish to PyPI** as `farmteam` (`uv build && uv publish`) so `uv tool install
-      farmteam` and `/farmteam:setup` work as documented. (The name was
+- [ ] **Make the repo public**: `gh repo edit labscommunity/yeschef --visibility public --accept-visibility-change-consequences`
+- [ ] **Publish to PyPI** as `yeschef` (`uv build && uv publish`) so `uv tool install
+      yeschef` and `/yeschef:setup` work as documented. (The name was
       collision-checked clean.)
 - [ ] Tag `v0.1.0` matching `pyproject.toml`, `.claude-plugin/plugin.json`, and
       `CHANGELOG.md` (a parity test enforces the last two).
@@ -24,11 +24,11 @@ placement drove the big repos; Show HN is the day-2 amplifier, not the engine.
 - [ ] Optional wider net: PR to the community marketplace
       `anthropics/claude-plugins-community` (automated safety screening).
 - [ ] Until accepted, users can install directly from the repo (already wired):
-      `/plugin marketplace add labscommunity/farmteam` → `/plugin install farmteam@farmteam`.
+      `/plugin marketplace add labscommunity/yeschef` → `/plugin install yeschef@yeschef`.
 
 ## 2. MCP ecosystem listings
 
-farmteam's MCP server is self-hosted HTTP (it lives inside the user's hub), so
+yeschef's MCP server is self-hosted HTTP (it lives inside the user's hub), so
 registries that expect an installable stdio package are a mismatch. Do these:
 
 - [ ] **awesome-mcp-servers** (punkpeye) PR — name, link, one-liner, correct category,
@@ -53,7 +53,7 @@ registries that expect an installable stdio package are a mismatch. Do these:
 
 - License: MIT. No telemetry. No network calls except to the user's own hub and model
   servers; `web_fetch` tool refuses internal addresses.
-- The plugin's MCP entry points at `http://localhost:8787/mcp` (the default `farmteam
-  up` hub); `/farmteam:setup` re-wires user scope for custom hosts.
+- The plugin's MCP entry points at `http://localhost:8787/mcp` (the default `yeschef
+  up` hub); `/yeschef:setup` re-wires user scope for custom hosts.
 - Auth: on by default (per-agent bearer tokens, gated registration, scoped reads);
   `--open` exists for trusted LANs and warns loudly.

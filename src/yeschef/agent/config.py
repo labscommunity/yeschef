@@ -14,7 +14,7 @@ from ..settings import env as _settings_env
 from ..tools.executor import ToolsConfig
 
 DEFAULT_SYSTEM_PROMPT = (
-    "You are {name}, an agent on the farm team running on node {node}. You collaborate "
+    "You are {name}, a cook in the kitchen working on node {node}. You collaborate "
     "with Claude Code and with other local agents through a shared hub. Be direct and "
     "concrete. When you are given a task, do the work and report the result; when you are in "
     "a conversation, reply with substance and stop when the goal is met."
