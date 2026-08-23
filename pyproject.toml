@@ -1,5 +1,5 @@
 [project]
-name = "yeschef"
+name = "yeschef-cli"
 version = "0.1.0"
 description = "The farm team for Claude Code and Codex: local models on your own hardware that take the grunt work, return the files they build, and never hit a rate limit"
 readme = "README.md"

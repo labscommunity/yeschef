@@ -3,7 +3,7 @@
 # One-time PyPI setup (owner must do this in the PyPI web UI, it can't be scripted):
 #   Since `yeschef` isn't published yet, add a PENDING trusted publisher:
 #     https://pypi.org/manage/account/publishing/  →  "Add a new pending publisher"
-#       PyPI Project Name:  yeschef
+#       PyPI Project Name:  yeschef-cli
 #       Owner:              labscommunity
 #       Repository name:    yeschef
 #       Workflow name:      publish.yml
@@ -50,7 +50,7 @@ jobs:
     # publish step, and is what the PyPI trusted-publisher config binds to.
     environment:
       name: pypi
-      url: https://pypi.org/p/yeschef
+      url: https://pypi.org/p/yeschef-cli
     permissions:
       id-token: write   # REQUIRED: mints the OIDC token PyPI trusts. No password needed.
     steps:

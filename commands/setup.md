@@ -8,8 +8,8 @@ result briefly. Stop and show the error if a step fails.
 1. **Check for the CLI.** Run `yeschef --version`. If it exists, skip to step 3.
 
 2. **Install it.** Try, in order, stopping at the first that works:
-   - `uv tool install yeschef`
-   - `pipx install yeschef`
+   - `uv tool install yeschef-cli`
+   - `pipx install yeschef-cli`
    - `uv tool install git+https://github.com/labscommunity/yeschef` (if the PyPI
      package is not available yet)
    Confirm with `yeschef --version`. If none work, report what's missing (Python 3.11+

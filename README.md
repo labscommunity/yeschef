@@ -36,7 +36,7 @@ No hovering, no "is it up yet."*
 ## Two commands
 
 ```bash
-uv tool install yeschef        # or: pipx install yeschef
+uv tool install yeschef-cli    # or: pipx install yeschef-cli — the command is `yeschef`
 
 # 1. On the hub machine (where you run Claude Code) — generates tokens,
 #    wires Claude Code, prints the clock-in line:
