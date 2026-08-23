@@ -11,10 +11,11 @@ import contextlib
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, FastAPI, Header, Query, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from ..models import (
     DEFAULT_TASK_TIMEOUT_S,
@@ -24,6 +25,7 @@ from ..models import (
     HubError,
     RoomPolicy,
     TaskState,
+    now,
 )
 from .store import Store
 
@@ -510,6 +512,72 @@ def create_app(store: Store, config: HubConfig, mcp_app: Any | None = None) -> F
             "queued_tasks": len(store.list_tasks(state=TaskState.QUEUED)),
             "lifetime": store.lifetime_stats(),
         }
+
+    @app.get("/overview")
+    def overview() -> dict:
+        """Read-only fleet snapshot for the dashboard — curated to omit task specs and
+        result bodies, so it is safe to serve un-authenticated within the same
+        LAN/Tailscale boundary as /healthz (never expose the hub through a funnel)."""
+        ref = now()
+        agents = store.list_agents()
+        active: dict[str, int] = {}
+        for t in store.list_tasks(limit=500):
+            if t.state in (TaskState.CLAIMED, TaskState.WORKING, TaskState.INPUT_REQUIRED):
+                if t.assignee:
+                    active[t.assignee] = active.get(t.assignee, 0) + 1
+        workers = []
+        for a in agents:
+            if a.kind is not AgentKind.WORKER:
+                continue
+            d = a.to_dict(ref)
+            d["active_tasks"] = active.get(a.name, 0)
+            d["heartbeat_age_s"] = round(ref - a.last_seen, 1)
+            workers.append(d)
+        workers.sort(key=lambda w: (w["status"] != "online", w["name"]))
+
+        def task_row(t) -> dict:
+            return {
+                "id": t.id,
+                "title": t.title,
+                "state": str(t.state),
+                "assignee": t.assignee,
+                "selector": t.selector,
+                "progress": {"pct": t.progress_pct, "message": t.progress_msg},
+                "attempts": t.attempts,
+                "error": t.error,
+                "age_s": round(ref - t.created_at, 1) if t.created_at else None,
+                "ran_s": (
+                    round(t.finished_at - t.claimed_at, 1)
+                    if t.finished_at and t.claimed_at
+                    else None
+                ),
+                "files": len((t.result or {}).get("files") or []),
+            }
+
+        tasks = [task_row(t) for t in store.list_tasks(limit=60)]
+        rooms = [
+            {
+                "id": r.id,
+                "topic": r.topic,
+                "members": [m for m in r.members if not m.startswith(("claude:", "operator:"))],
+                "is_dm": r.dm_key is not None,
+                "archived": r.archived,
+                "archived_reason": r.archived_reason,
+            }
+            for r in store.list_rooms(include_archived=True)[:20]
+        ]
+        return {
+            "now": ref,
+            "workers": workers,
+            "sessions": [a.to_dict(ref) for a in agents if a.kind is AgentKind.CLAUDE],
+            "tasks": tasks,
+            "rooms": rooms,
+            "lifetime": store.lifetime_stats(),
+        }
+
+    @app.get("/", response_class=HTMLResponse)
+    def dashboard() -> str:
+        return (Path(__file__).with_name("dashboard.html")).read_text()
 
     app.include_router(build_router(store, config))
     if mcp_app is not None:

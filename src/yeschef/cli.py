@@ -242,7 +242,9 @@ def up(
             f"  [cyan]{join}[/cyan]\n\n"
             f"On a Tailnet, swap the host for the machine's MagicDNS name.\n"
             f"Run the line from here with [cyan]yeschef ask[/cyan] / "
-            f"[cyan]submit[/cyan] / [cyan]cooks[/cyan].",
+            f"[cyan]submit[/cyan] / [cyan]cooks[/cyan].\n"
+            f"Watch the pass in a browser: [cyan]{cfg.hub_url}/[/cyan] "
+            f"([cyan]yeschef dashboard[/cyan]).",
             title="yeschef — kitchen open",
             border_style="green",
         )
@@ -796,6 +798,28 @@ def mcp_proxy(hub: str = typer.Option(None, help="Hub URL (default: the configur
     else:
         proxy = create_proxy(_mcp_url(hub), name="yeschef")
     proxy.run(show_banner=False)
+
+
+@app.command("dashboard")
+def dashboard(
+    hub: str = typer.Option(None, help="Hub URL (default: the configured one)."),
+    no_open: bool = typer.Option(
+        False, "--no-open", help="Just print the URL, don't open a browser."
+    ),
+) -> None:
+    """Open the live web dashboard for the kitchen in a browser."""
+    url = f"{_hub_url(hub)}/"
+    try:
+        httpx.get(f"{_hub_url(hub)}/healthz", timeout=5.0).raise_for_status()
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]hub unreachable[/red] at {url} — {exc}")
+        console.print("Open the kitchen with [cyan]yeschef up[/cyan].")
+        raise typer.Exit(1) from exc
+    console.print(f"dashboard: [cyan]{url}[/cyan]")
+    if not no_open:
+        import webbrowser
+
+        webbrowser.open(url)
 
 
 @app.command("stats")
