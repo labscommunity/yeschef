@@ -1,0 +1,62 @@
+# Publish yeschef to PyPI via Trusted Publishing (OIDC) — no API token stored.
+#
+# One-time PyPI setup (owner must do this in the PyPI web UI, it can't be scripted):
+#   Since `yeschef` isn't published yet, add a PENDING trusted publisher:
+#     https://pypi.org/manage/account/publishing/  →  "Add a new pending publisher"
+#       PyPI Project Name:  yeschef
+#       Owner:              labscommunity
+#       Repository name:    yeschef
+#       Workflow name:      publish.yml
+#       Environment name:   pypi
+#   After the first successful run it converts to a normal trusted publisher.
+#
+# To release: bump `version` in pyproject.toml, then publish a GitHub Release whose
+# tag matches (e.g. v0.1.0). This workflow builds and publishes that version.
+
+name: publish
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch: {}   # manual run allowed (still gated by the `pypi` environment)
+
+jobs:
+  build:
+    name: build sdist + wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+      - name: Check the built distributions
+        run: |
+          python -m pip install --upgrade twine
+          python -m twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    # A dedicated environment lets you add required reviewers / branch rules to the
+    # publish step, and is what the PyPI trusted-publisher config binds to.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/yeschef
+    permissions:
+      id-token: write   # REQUIRED: mints the OIDC token PyPI trusts. No password needed.
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Publish to PyPI (Trusted Publishing)
+        uses: pypa/gh-action-pypi-publish@release/v1
