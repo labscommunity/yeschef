@@ -29,10 +29,13 @@ def test_submit_returns_queued_task_immediately(fleet: Store) -> None:
     assert task.id.startswith("task_")
 
 
-def test_submit_requires_a_target(fleet: Store) -> None:
-    with pytest.raises(HubError) as exc:
-        fleet.submit_task("no target", "spec", "claude:main")
-    assert exc.value.code == "invalid"
+def test_submit_without_target_routes_to_first_idle(store) -> None:
+    """Omitting assignee AND selector means 'whoever is idle' — the wildcard selector
+    routes to the first online worker instead of bouncing the submit."""
+    store.register_agent("anyone", kind="worker", node="n", backend="b", tags=[])
+    task = store.submit_task(title="t", spec="do it", created_by="c")
+    assert task.selector == "*"
+    assert store.next_task_for("anyone").id == task.id
 
 
 def test_dedupe_key_returns_the_same_task(fleet: Store) -> None:
@@ -104,9 +107,12 @@ def test_complete_records_result_and_is_terminal(fleet: Store) -> None:
 def test_cancel_terminates_a_running_task(fleet: Store) -> None:
     task = fleet.submit_task("t", "spec", "claude:main", assignee="alpha")
     fleet.claim_task(task.id, "alpha")
-    cancelled = fleet.cancel_task(task.id, "claude:main")
+    cancelled = fleet.cancel_task(task.id, "claude:main", reason="changed my mind")
     assert cancelled.state is TaskState.CANCELLED
-    assert "claude:main" in (cancelled.error or "")
+    # provenance lives in result, not error — a deliberate cancel is not a failure
+    assert cancelled.error is None
+    assert cancelled.result["cancelled_by"] == "claude:main"
+    assert cancelled.result["cancel_reason"] == "changed my mind"
 
 
 def test_events_form_an_audit_trail(fleet: Store) -> None:

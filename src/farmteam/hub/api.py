@@ -379,7 +379,11 @@ def build_router(store: Store, config: HubConfig) -> APIRouter:
     ) -> dict:
         who = payload["as_agent"]
         auth.agent(who, authorization)
-        return {"task": store.fail_task(task_id, who, payload.get("error", "unknown")).to_dict()}
+        return {
+            "task": store.fail_task(
+                task_id, who, payload.get("error", "unknown"), result=payload.get("result")
+            ).to_dict()
+        }
 
     @router.post("/tasks/{task_id}/input_required")
     def task_input_required(

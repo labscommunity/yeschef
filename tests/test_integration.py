@@ -222,7 +222,14 @@ async def test_agent_asks_for_input_and_resumes_when_answered(fleet) -> None:
     hub, claude = fleet
 
     def needs_input(system: str, turns: list[Turn]) -> str:
-        answered = any("staging" in turn.content for turn in turns)
+        # Only a USER-provided answer counts: the harness's self-answer bounce echoes
+        # the model's own NEED_INPUT text back as an assistant turn, which must not
+        # read as an answer.
+        answered = any(
+            "staging" in turn.content and "NEED_INPUT" not in turn.content
+            for turn in turns
+            if turn.role == "user"
+        )
         if answered:
             return "Deployed to staging."
         return "NEED_INPUT: staging or prod?"
@@ -361,7 +368,7 @@ async def test_two_local_agents_converse_autonomously(fleet) -> None:
             {
                 "participants": ["alpha", "beta"],
                 "goal": "decide on a caching strategy",
-                "max_messages": 7,
+                "max_messages": 6,  # agent turns only — the seed no longer counts
             },
         )
         room_id = started.data["room_id"]
@@ -558,12 +565,13 @@ async def test_status_is_durable_across_sessions(fleet) -> None:
 
 
 async def test_a_model_that_only_describes_tool_calls_fails_loudly(fleet) -> None:
-    """Some models print tool calls as JSON instead of emitting them. Reporting that as
-    a completed task is worse than failing — the requester believes work happened."""
+    """Parseable text-form tool calls are recovered and executed (see test_ux_fixes);
+    this guards the remaining case — tool-call-shaped text the parser CANNOT recover. Completing
+    that as a task is worse than failing: the requester believes work happened."""
     hub, claude = fleet
     pretend = (
         'I will create the files.\n```json\n{"name": "file_write", '
-        '"arguments": {"path": "index.html", "content": "<html></html>"}}\n```'
+        '"arguments": {path: index.html, content: <html></html>}}\n```'
     )
     harness, runner = await start_agent(
         hub,
@@ -577,7 +585,7 @@ async def test_a_model_that_only_describes_tool_calls_fails_loudly(fleet) -> Non
         )
         task_id = submitted.data["task_id"]
         await wait_for(lambda: hub.store.require_task(task_id).state == "failed")
-        assert "tool calls as text" in hub.store.require_task(task_id).error
+        assert "tool-call-like text" in hub.store.require_task(task_id).error
     finally:
         await stop_agent(harness, runner)
 

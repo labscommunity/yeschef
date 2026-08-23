@@ -808,13 +808,31 @@ def stats(hub: str = typer.Option(None)) -> None:
         raise typer.Exit(1) from exc
     lifetime = health.get("lifetime", {})
     hours = lifetime.get("work_seconds", 0) / 3600.0
+    fail_hours = lifetime.get("work_seconds_failed", 0) / 3600.0
+    submitted = lifetime.get("tasks_submitted", 0)
+    completed = lifetime.get("tasks_completed", 0)
+    tail = lifetime.get("tasks_failed_cancelled", 0)
     table = Table(show_header=False, box=None)
-    table.add_row("tasks completed", f"[bold]{lifetime.get('tasks_completed', 0)}[/bold]")
-    table.add_row("tokens kept local", f"[bold]{lifetime.get('local_tokens', 0):,}[/bold]")
-    table.add_row("messages exchanged", f"[bold]{lifetime.get('messages', 0):,}[/bold]")
-    table.add_row("work run on your hardware", f"[bold]{hours:.1f}h[/bold]")
+    table.add_row("tasks completed", f"[bold]{completed}[/bold]")
+    if submitted:
+        rate = 100 * completed / submitted
+        table.add_row("of submitted", f"{completed}/{submitted} ({rate:.0f}%)")
+    if tail:
+        table.add_row(
+            "[dim]failed / cancelled[/dim]",
+            f"[dim]{tail} · {fail_hours:.1f}h of local compute[/dim]",
+        )
+    table.add_row("tokens generated locally", f"[bold]{lifetime.get('task_tokens', 0):,}[/bold]")
+    if lifetime.get("room_tokens"):
+        table.add_row("[dim]+ agent debate tokens[/dim]", f"[dim]{lifetime['room_tokens']:,}[/dim]")
+    table.add_row("local compute", f"[bold]{hours:.1f}h[/bold] (completed tasks)")
     table.add_row("fleet", f"{health.get('online', 0)}/{health.get('agents', 0)} agents online")
     console.print(table)
+    console.print(
+        "[dim]Note: locally-generated tokens are not saved Claude tokens one-for-one — "
+        "local models are weaker and their output usually needs review. This is compute "
+        "run on your hardware, not a dollar figure.[/dim]"
+    )
 
 
 @app.command("tasks")
@@ -838,7 +856,7 @@ def list_tasks(state: str = typer.Option(None), hub: str = typer.Option(None)) -
 @app.command("task")
 def show_task(task_id: str, hub: str = typer.Option(None)) -> None:
     """Show one task with its progress and event history."""
-    data = _mcp("task_status", {"task_id": task_id}, hub=hub)
+    data = _mcp("task_status", {"task_id": task_id, "verbose": True}, hub=hub)
     task = data["task"]
     console.print(
         f"[bold]{task['title']}[/bold]  [{task['state']}]  → {task['assignee'] or task['selector']}"
@@ -952,7 +970,18 @@ def agent_run(
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """Run an agent from a TOML config (advanced; `join` is the easy path)."""
-    _run_worker(AgentConfig.load(config), verbose)
+    cfg = AgentConfig.load(config)
+    if cfg.backend.get("type", "openai_compat") != "cli":
+        ok, message = asyncio.run(preflight(cfg.backend))
+        if not ok:
+            console.print(
+                f"[red]WARNING:[/red] backend preflight failed — {message}\n"
+                f"  {cfg.backend.get('base_url')} does not serve "
+                f"[bold]{cfg.backend.get('model')}[/bold] right now. Registering anyway; "
+                "every task will fail until the model answers. Fix the backend or the "
+                "config, then restart this worker."
+            )
+    _run_worker(cfg, verbose)
 
 
 @agent_app.command("run-detached-worker", hidden=True)

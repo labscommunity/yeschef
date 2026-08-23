@@ -17,6 +17,7 @@ from pathlib import Path
 from ..models import (
     DEFAULT_TASK_TIMEOUT_S,
     HEARTBEAT_TTL_S,
+    INPUT_REQUIRED_TTL_S,
     MAX_ARTIFACT_BYTES,
     Agent,
     AgentKind,
@@ -65,6 +66,25 @@ class Store:
         self._db = sqlite3.connect(self.path, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.executescript(SCHEMA_PATH.read_text())
+        # Idempotent migrations for columns added after a database was created.
+        import contextlib as _ctx
+        import sqlite3 as _sqlite3
+
+        with _ctx.suppress(_sqlite3.OperationalError):
+            self._db.execute("ALTER TABLE tasks ADD COLUMN project TEXT")
+            self._db.commit()
+        with _ctx.suppress(_sqlite3.OperationalError):
+            self._db.execute("ALTER TABLE artifacts ADD COLUMN fetched_at REAL")
+            self._db.commit()
+        with _ctx.suppress(_sqlite3.OperationalError):
+            self._db.execute("ALTER TABLE tasks ADD COLUMN output_mode TEXT")
+            self._db.commit()
+        with _ctx.suppress(_sqlite3.OperationalError):
+            self._db.execute("ALTER TABLE tasks ADD COLUMN data TEXT")
+            self._db.commit()
+        with _ctx.suppress(_sqlite3.OperationalError):
+            self._db.execute("ALTER TABLE tasks ADD COLUMN input_required_at REAL")
+            self._db.commit()
         self._db.commit()
 
     def close(self) -> None:
@@ -538,11 +558,15 @@ class Store:
                     ts,
                 ),
             )
+            # max_messages bounds AGENT chatter; the operator steering a room is the
+            # safety valve and must not burn its budget by speaking.
+            counted = 0 if sender.startswith(("claude:", "operator:")) else 1
             self._db.execute(
-                """UPDATE rooms SET next_seq = next_seq + 1, message_count = message_count + 1,
+                """UPDATE rooms SET next_seq = next_seq + 1,
+                                    message_count = message_count + ?,
                                     total_tokens = total_tokens + ?, last_activity = ?
                    WHERE id = ?""",
-                (cost, ts, room_id),
+                (counted, cost, ts, room_id),
             )
             self._db.commit()
             row = self._db.execute("SELECT * FROM messages WHERE id = ?", (mid,)).fetchone()
@@ -574,7 +598,38 @@ class Store:
         # writes it — in the seed goal ("say X when you agree") or mid-conversation — is
         # setting the rule, not ending the room; archive_room is the deliberate exit.
         if policy.stop_phrase and policy.stop_phrase in body and not from_operator:
-            self.archive_room(room_id, "stop_phrase")
+            # Floor: small models emit the terminator on turn ONE, archiving the room
+            # before anyone else has spoken and locking the operator out. Honor the
+            # phrase only once every worker participant has taken a turn.
+            worker_members = [m for m in room.members if not m.startswith(("claude:", "operator:"))]
+            with self._lock:
+                spoken = {
+                    r["sender"]
+                    for r in self._db.execute(
+                        "SELECT DISTINCT sender FROM messages WHERE room_id = ?",
+                        (room_id,),
+                    ).fetchall()
+                }
+            if all(m in spoken for m in worker_members):
+                self.archive_room(room_id, "stop_phrase")
+                return
+            # Floor not met: the phrase does NOT end the room yet — but we must still
+            # fall through to the message/token caps below, or a worker looping on the
+            # stop phrase (with another member silent) would grow the room unbounded.
+        # A worker restating itself verbatim is a dead debate — archive before it
+        # burns the whole budget on repeats (the reader wades through identical turns).
+        with self._lock:
+            recent = self._db.execute(
+                "SELECT sender, body FROM messages WHERE room_id = ? ORDER BY seq DESC LIMIT 3",
+                (room_id,),
+            ).fetchall()
+        if (
+            len(recent) == 3
+            and recent[0]["sender"] == recent[2]["sender"]
+            and recent[0]["body"] == recent[2]["body"]
+            and len(recent[0]["body"]) > 80
+        ):
+            self.archive_room(room_id, "degenerate: duplicate turns")
         elif policy.max_messages is not None and row["message_count"] >= policy.max_messages:
             self.archive_room(room_id, "max_messages")
         elif policy.max_total_tokens is not None and row["total_tokens"] >= policy.max_total_tokens:
@@ -661,9 +716,15 @@ class Store:
         priority: int = 0,
         timeout_s: float = DEFAULT_TASK_TIMEOUT_S,
         dedupe_key: str | None = None,
+        project: str | None = None,
+        output_mode: str | None = None,
+        data: str | None = None,
     ) -> Task:
         if not assignee and not selector:
-            raise HubError(ErrorCode.INVALID, "assignee or selector required")
+            # "Whoever is idle": the natural routing intent — first online worker
+            # claims it. (Sessions were bounced and had to hand-build union selectors
+            # spanning the roster.)
+            selector = "*"
         if dedupe_key:
             with self._lock:
                 row = self._db.execute(
@@ -671,30 +732,59 @@ class Store:
                 ).fetchone()
             if row:
                 existing = self.get_task(row["id"])
-                if existing is not None:
+                if existing is not None and existing.state in (
+                    TaskState.FAILED,
+                    TaskState.CANCELLED,
+                ):
+                    # A dead task must not swallow a fresh attempt: release the key
+                    # so the resubmit (possibly with a new spec/assignee) proceeds.
+                    with self._lock:
+                        self._db.execute(
+                            "UPDATE tasks SET dedupe_key = NULL WHERE id = ?",
+                            (existing.id,),
+                        )
+                        self._db.commit()
+                elif existing is not None:
                     return existing
         tid = new_id("task")
         ts = now()
-        with self._lock:
-            self._db.execute(
-                """INSERT INTO tasks (id, title, spec, created_by, state, assignee, selector,
-                                      priority, timeout_s, dedupe_key, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    tid,
-                    title,
-                    spec,
-                    created_by,
-                    str(TaskState.QUEUED),
-                    assignee,
-                    selector,
-                    priority,
-                    timeout_s,
-                    dedupe_key,
-                    ts,
-                ),
-            )
-            self._db.commit()
+        try:
+            with self._lock:
+                self._db.execute(
+                    """INSERT INTO tasks (id, title, spec, created_by, state, assignee, selector,
+                                          priority, timeout_s, dedupe_key, project,
+                                          output_mode, data, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        tid,
+                        title,
+                        spec,
+                        created_by,
+                        str(TaskState.QUEUED),
+                        assignee,
+                        selector,
+                        priority,
+                        timeout_s,
+                        dedupe_key,
+                        project,
+                        output_mode,
+                        data,
+                        ts,
+                    ),
+                )
+                self._db.commit()
+        except sqlite3.IntegrityError:
+            # The dedupe_key check-then-insert is not atomic under concurrent submits;
+            # a UNIQUE collision means another caller won the race — return their task
+            # rather than 500 (Claude retries dispatches on the hot path).
+            if dedupe_key:
+                with self._lock:
+                    row = self._db.execute(
+                        "SELECT id FROM tasks WHERE dedupe_key = ?", (dedupe_key,)
+                    ).fetchone()
+                if row and (winner := self.get_task(row["id"])) is not None:
+                    return winner
+            raise
         task = self.get_task(tid)
         assert task is not None
         self._log_task(tid, "submitted", {"by": created_by, "target": assignee or selector})
@@ -790,13 +880,19 @@ class Store:
 
     def complete_task(self, task_id: str, agent: str, result: dict | None) -> Task:
         self._require_holder(task_id, agent)
-        return self._finish(task_id, TaskState.COMPLETED, result=result)
+        return self._finish(task_id, TaskState.COMPLETED, result=result, expect_holder=agent)
 
-    def fail_task(self, task_id: str, agent: str, error: str) -> Task:
+    def fail_task(self, task_id: str, agent: str, error: str, result: dict | None = None) -> Task:
+        """`result` may carry partial output/usage — a failed run's tokens still cost
+        electricity, and the accounting should not have holes."""
         self._require_holder(task_id, agent)
-        return self._finish(task_id, TaskState.FAILED, error=error)
+        return self._finish(
+            task_id, TaskState.FAILED, result=result, error=error, expect_holder=agent
+        )
 
-    def cancel_task(self, task_id: str, by: str, privileged: bool = False) -> Task:
+    def cancel_task(
+        self, task_id: str, by: str, privileged: bool = False, reason: str | None = None
+    ) -> Task:
         task = self.get_task(task_id)
         if task is None:
             raise not_found(f"task '{task_id}'")
@@ -807,16 +903,54 @@ class Store:
         if task.state.terminal:
             raise HubError(ErrorCode.CONFLICT, f"task already {task.state}", 409)
         holder = task.assignee
-        finished = self._finish(task_id, TaskState.CANCELLED, error=f"cancelled by {by}")  # noqa: E501
+        # Cancel provenance is not a failure: it lives in result, error stays null so
+        # audit queries can tell a deliberate cancel from a genuine failure.
+        cancel_meta = {"cancelled_by": by, "cancel_reason": reason}
+        finished = self._finish(task_id, TaskState.CANCELLED, result=cancel_meta)
         if holder:
             self.bus.publish(holder, EventKind.TASK_CANCELLED, {"task_id": task_id, "by": by})
         return finished
+
+    def reassign_task(self, task_id: str, assignee: str, by: str) -> Task:
+        """Requeue a live task onto a different worker, preserving id and history."""
+        task = self.require_task(task_id)
+        holder = task.assignee
+        with self._lock:
+            self._db.execute(
+                """UPDATE tasks SET assignee = ?, state = ?, claimed_at = NULL,
+                                    progress_pct = NULL, progress_msg = ?
+                   WHERE id = ? AND state NOT IN (?, ?, ?)""",
+                (
+                    assignee,
+                    str(TaskState.QUEUED),
+                    f"reassigned from {holder} by {by}",
+                    task_id,
+                    str(TaskState.COMPLETED),
+                    str(TaskState.FAILED),
+                    str(TaskState.CANCELLED),
+                ),
+            )
+            self._db.commit()
+        if holder and holder != assignee:
+            self.bus.publish(holder, EventKind.TASK_CANCELLED, {"task_id": task_id, "by": by})
+        self._log_task(task_id, "reassigned", {"from": holder, "to": assignee, "by": by})
+        fresh = self.require_task(task_id)
+        self._announce_task(fresh)
+        return fresh
 
     def request_input(self, task_id: str, agent: str, question: str) -> Task:
         """Agent needs a human/Claude answer: opens the task room and parks the task."""
         self._require_holder(task_id, agent)
         room = self.ensure_task_room(task_id)
         self._set_state(task_id, TaskState.INPUT_REQUIRED)
+        with self._lock:
+            # Summaries carry progress, so the question rides along — a wait_task
+            # return alone tells the caller what the worker is asking.
+            self._db.execute(
+                "UPDATE tasks SET progress_msg = ?, input_required_at = ? WHERE id = ?",
+                (f"awaiting input: {question[:300]}", now(), task_id),
+            )
+            self._db.commit()
         self.post_message(room.id, agent, question)
         self._log_task(task_id, "input_required", {"question": question})
         task = self.get_task(task_id)
@@ -828,6 +962,13 @@ class Store:
         task = self.get_task(task_id)
         if task is None:
             raise not_found(f"task '{task_id}'")
+        with self._lock:
+            # The parked question is stale the moment an answer lands.
+            self._db.execute(
+                "UPDATE tasks SET progress_msg = ? WHERE id = ? AND state = ?",
+                ("input received, resuming", task_id, str(TaskState.INPUT_REQUIRED)),
+            )
+            self._db.commit()
         if task.state is not TaskState.INPUT_REQUIRED:
             raise HubError(ErrorCode.CONFLICT, f"task is {task.state}, not input_required", 409)
         room = self.ensure_task_room(task_id)
@@ -890,6 +1031,18 @@ class Store:
     def require_task(self, task_id: str) -> Task:
         task = self.get_task(task_id)
         if task is None:
+            begins = self.history_begins_at()
+            if begins:
+                import datetime as _dt
+
+                iso = _dt.datetime.fromtimestamp(begins, _dt.UTC).strftime("%Y-%m-%d %H:%M UTC")
+                raise HubError(
+                    ErrorCode.NOT_FOUND,
+                    f"task '{task_id}' not found — this hub's task history begins "
+                    f"{iso}; older ids are gone. list_tasks shows what exists.",
+                    404,
+                )
+        if task is None:
             raise not_found(f"task '{task_id}'")
         return task
 
@@ -898,10 +1051,14 @@ class Store:
         state: TaskState | None = None,
         assignee: str | None = None,
         created_by: str | None = None,
+        project: str | None = None,
         limit: int = 100,
     ) -> list[Task]:
         sql = "SELECT * FROM tasks"
         clauses, args = [], []
+        if project:
+            clauses.append("project = ?")
+            args.append(project)
         if state is not None:
             clauses.append("state = ?")
             args.append(str(state))
@@ -959,6 +1116,7 @@ class Store:
         state: TaskState,
         result: dict | None = None,
         error: str | None = None,
+        expect_holder: str | None = None,
     ) -> Task:
         """Move a task to a terminal state, once.
 
@@ -970,18 +1128,23 @@ class Store:
             cursor = self._db.execute(
                 """UPDATE tasks SET state = ?, result_json = ?, error = ?, finished_at = ?,
                                     progress_pct = CASE WHEN ? = 'completed' THEN 100.0
-                                                        ELSE progress_pct END
-                   WHERE id = ? AND state NOT IN (?, ?, ?)""",
+                                                        ELSE progress_pct END,
+                                    progress_msg = ?
+                   WHERE id = ? AND state NOT IN (?, ?, ?)
+                         AND (? IS NULL OR assignee = ?)""",
                 (
                     str(state),
                     json.dumps(result) if result is not None else None,
                     error,
                     now(),
                     str(state),
+                    str(state),
                     task_id,
                     str(TaskState.COMPLETED),
                     str(TaskState.FAILED),
                     str(TaskState.CANCELLED),
+                    expect_holder,
+                    expect_holder,
                 ),
             )
             self._db.commit()
@@ -1022,6 +1185,12 @@ class Store:
             priority=row["priority"],
             timeout_s=row["timeout_s"],
             dedupe_key=row["dedupe_key"],
+            project=row["project"] if "project" in row.keys() else None,
+            output_mode=row["output_mode"] if "output_mode" in row.keys() else None,
+            data=row["data"] if "data" in row.keys() else None,
+            input_required_at=(
+                row["input_required_at"] if "input_required_at" in row.keys() else None
+            ),
             room_id=row["room_id"],
             progress_pct=row["progress_pct"],
             progress_msg=row["progress_msg"],
@@ -1035,39 +1204,212 @@ class Store:
 
     # ----------------------------------------------------------------- stats
 
+    def history_begins_at(self) -> float | None:
+        with self._lock:
+            row = self._db.execute("SELECT MIN(created_at) AS t FROM tasks").fetchone()
+        return row["t"]
+
+    def unretrieved_result_entries(self, limit: int = 3, project: str | None = None) -> list[dict]:
+        """A few identifying rows for the uncollected counter, so a session can judge
+        relevance (same project or not) without extra calls."""
+        rows = self._unretrieved_rows(project)
+        return [{"id": r.id, "title": r.title, "project": r.project} for r in rows[:limit]]
+
+    def _unretrieved_rows(self, project: str | None = None):
+        """Completed tasks with files none of which anyone ever fetched.
+
+        Fetches the whole fetched-artifact-id set once (a single query) rather than a
+        COUNT per task — whoami calls this at session start and must return fast.
+        """
+        with self._lock:
+            fetched_ids = {
+                r["id"]
+                for r in self._db.execute(
+                    "SELECT id FROM artifacts WHERE fetched_at IS NOT NULL"
+                ).fetchall()
+            }
+        out = []
+        for t in self.list_tasks(state=TaskState.COMPLETED, project=project, limit=500):
+            ids = [
+                f["artifact_id"] for f in (t.result or {}).get("files") or [] if "artifact_id" in f
+            ]
+            if ids and not any(i in fetched_ids for i in ids):
+                out.append(t)
+        return out
+
+    def unretrieved_results(self, project: str | None = None) -> int:
+        return len(self._unretrieved_rows(project))
+
+    def mark_collected(self, task) -> None:
+        """Fetching a result counts as collecting it — the requester has seen the
+        work; its files stay fetchable but stop reading as orphaned."""
+        ids = [
+            f["artifact_id"] for f in (task.result or {}).get("files") or [] if "artifact_id" in f
+        ]
+        if not ids:
+            return
+        with self._lock:
+            self._db.execute(
+                f"UPDATE artifacts SET fetched_at = COALESCE(fetched_at, ?) "
+                f"WHERE id IN ({','.join('?' * len(ids))})",
+                [now(), *ids],
+            )
+            self._db.commit()
+
+    def dismiss_results(self, task_ids: list[str] | None = None, dismiss_all: bool = False) -> int:
+        """Mark uncollected results' artifacts fetched without pulling them."""
+        targets = (
+            self._unretrieved_rows()
+            if dismiss_all
+            else [self.require_task(t) for t in task_ids or []]
+        )
+        n = 0
+        for t in targets:
+            ids = [
+                f["artifact_id"] for f in (t.result or {}).get("files") or [] if "artifact_id" in f
+            ]
+            if not ids:
+                continue
+            with self._lock:
+                self._db.execute(
+                    f"UPDATE artifacts SET fetched_at = COALESCE(fetched_at, ?) "
+                    f"WHERE id IN ({','.join('?' * len(ids))})",
+                    [now(), *ids],
+                )
+                self._db.commit()
+            n += 1
+        return n
+
+    def task_counts(self, project: str | None = None) -> dict:
+        """Aggregate counts by state and by assignee — a survey without task bodies."""
+        where, args = "", []
+        if project:
+            where, args = " WHERE project = ?", [project]
+        with self._lock:
+            by_state = self._db.execute(
+                f"SELECT state, COUNT(*) AS n FROM tasks{where} GROUP BY state", args
+            ).fetchall()
+            by_assignee = self._db.execute(
+                f"SELECT assignee, COUNT(*) AS n FROM tasks{where} GROUP BY assignee",
+                args,
+            ).fetchall()
+        return {
+            "total": sum(r["n"] for r in by_state),
+            "by_state": {r["state"]: r["n"] for r in by_state},
+            "by_assignee": {r["assignee"] or "(none)": r["n"] for r in by_assignee},
+        }
+
+    def worker_stats(self) -> list[dict]:
+        """Per-worker throughput and success rate from the durable record."""
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT assignee AS name,
+                          COUNT(*) AS total,
+                          SUM(state = 'completed') AS completed,
+                          SUM(state IN ('failed', 'cancelled')) AS failed,
+                          COALESCE(SUM(CASE WHEN state = 'completed'
+                                       THEN finished_at - claimed_at END), 0) AS work_s
+                     FROM tasks
+                    WHERE assignee IS NOT NULL AND claimed_at IS NOT NULL
+                    GROUP BY assignee""",
+            ).fetchall()
+        return [
+            {
+                "name": r["name"],
+                "total": r["total"],
+                "completed": r["completed"],
+                "failed": r["failed"],
+                "success_rate": round(r["completed"] / r["total"], 3) if r["total"] else None,
+                "work_seconds": round(r["work_s"], 1),
+            }
+            for r in rows
+        ]
+
+    def active_task_counts(self) -> dict[str, int]:
+        """Live tasks per assignee, so the roster can show busy/idle directly."""
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT assignee, COUNT(*) AS n FROM tasks
+                    WHERE assignee IS NOT NULL AND state IN (?, ?, ?)
+                    GROUP BY assignee""",
+                (
+                    str(TaskState.CLAIMED),
+                    str(TaskState.WORKING),
+                    str(TaskState.INPUT_REQUIRED),
+                ),
+            ).fetchall()
+        return {row["assignee"]: row["n"] for row in rows}
+
     def lifetime_stats(self) -> dict:
         """What the farm team has done for you, computed from the durable record.
 
         Derived on demand from tasks/rooms rather than kept as a counter, so it can
         never drift from the truth and needs no migration.
         """
+        done = str(TaskState.COMPLETED)
         with self._lock:
             tasks_row = self._db.execute(
                 """SELECT COUNT(*) AS done,
                           COALESCE(SUM(finished_at - claimed_at), 0) AS work_s
                      FROM tasks WHERE state = ? AND claimed_at IS NOT NULL""",
-                (str(TaskState.COMPLETED),),
+                (done,),
             ).fetchone()
-            token_row = self._db.execute(
+            # The failed/cancelled tail is real worker-time too — hiding it would let
+            # the headline oversell. Report it beside the completed hours.
+            tail_row = self._db.execute(
+                """SELECT COUNT(*) AS n,
+                          COALESCE(SUM(finished_at - claimed_at), 0) AS work_s
+                     FROM tasks
+                    WHERE state IN (?, ?) AND claimed_at IS NOT NULL""",
+                (str(TaskState.FAILED), str(TaskState.CANCELLED)),
+            ).fetchone()
+            submitted = self._db.execute("SELECT COUNT(*) AS n FROM tasks").fetchone()["n"]
+            task_tokens = self._db.execute(
+                """SELECT COALESCE(SUM(COALESCE(json_extract(result_json, '$.tokens'), 0)), 0)
+                          AS tokens
+                     FROM tasks WHERE state = ?""",
+                (done,),
+            ).fetchone()["tokens"]
+            room_row = self._db.execute(
                 "SELECT COALESCE(SUM(total_tokens), 0) AS tokens, "
                 "COALESCE(SUM(message_count), 0) AS messages FROM rooms"
             ).fetchone()
         return {
+            "tasks_submitted": submitted,
             "tasks_completed": tasks_row["done"],
+            "tasks_failed_cancelled": tail_row["n"],
             "work_seconds": round(tasks_row["work_s"], 1),
-            "local_tokens": token_row["tokens"],
-            "messages": token_row["messages"],
+            "work_seconds_failed": round(tail_row["work_s"], 1),
+            # Task tokens are the work; room tokens are inter-worker debate chatter.
+            # Kept separate so "kept local" can't quietly absorb the debates.
+            "task_tokens": task_tokens,
+            "room_tokens": room_row["tokens"],
+            "local_tokens": task_tokens + room_row["tokens"],
+            "messages": room_row["messages"],
         }
 
     @staticmethod
     def format_stats(stats: dict) -> str:
-        """One compact human line, e.g. for tool-response footers."""
-        hours = stats["work_seconds"] / 3600.0
-        clock = f"{hours:.1f}h" if hours >= 1 else f"{stats['work_seconds'] / 60.0:.0f}m"
-        return (
-            f"farm team lifetime: {stats['tasks_completed']} tasks · "
-            f"~{stats['local_tokens']:,} tokens kept local · {clock} of work on your hardware"
+        """One compact human line, e.g. for tool-response footers.
+
+        Deliberately NOT phrased as dollar savings: local tokens are not saved Claude
+        tokens one-for-one (local models are weaker and need verification), so the line
+        states what happened — work run locally — and shows the failed tail rather than
+        a single rosy number a CFO could misread.
+        """
+
+        def clock(sec: float) -> str:
+            return f"{sec / 3600.0:.1f}h" if sec >= 3600 else f"{sec / 60.0:.0f}m"
+
+        line = (
+            f"farm team lifetime: {stats['tasks_completed']} tasks completed · "
+            f"~{stats['task_tokens']:,} tokens generated locally · "
+            f"{clock(stats['work_seconds'])} of local compute"
         )
+        tail = stats.get("tasks_failed_cancelled") or 0
+        if tail:
+            line += f" (+{tail} failed/cancelled, {clock(stats['work_seconds_failed'])} more)"
+        return line
 
     # -------------------------------------------------------------- artifacts
 
@@ -1106,11 +1448,19 @@ class Store:
             "sha256": digest,
         }
 
-    def get_artifact(self, artifact_id: str) -> tuple[dict, bytes]:
+    def get_artifact(self, artifact_id: str, collect: bool = True) -> tuple[dict, bytes]:
+        """collect=False reads the bytes WITHOUT marking the result collected — for
+        previews/inspection, which must not zero out the "uncollected work" nudge."""
         with self._lock:
             row = self._db.execute(
                 "SELECT * FROM artifacts WHERE id = ?", (artifact_id,)
             ).fetchone()
+            if row and collect:
+                self._db.execute(
+                    "UPDATE artifacts SET fetched_at = COALESCE(fetched_at, ?) WHERE id = ?",
+                    (now(), artifact_id),
+                )
+                self._db.commit()
         if row is None:
             raise not_found(f"artifact '{artifact_id}'")
         directory = self._artifact_dir()
@@ -1154,12 +1504,41 @@ class Store:
             # to an offline agent sits in `queued` forever and the requester is never told.
             started = task.claimed_at if task.claimed_at is not None else task.created_at
             if ref - started > task.timeout_s:
+                if task.claimed_at is None:
+                    # Never claimed: the assignee was offline or no worker matched —
+                    # a bare 'timeout' read as a slow run and hid the real cause.
+                    cause = (
+                        f"assignee {task.assignee} never came online"
+                        if task.assignee
+                        else f"no online worker matched selector {task.selector!r}"
+                    )
+                    err = f"unclaimed for {int(ref - started)}s — {cause}"
+                else:
+                    err = "timeout"
                 with contextlib.suppress(HubError):
-                    self._finish(task.id, TaskState.FAILED, error="timeout")
+                    self._finish(task.id, TaskState.FAILED, error=err)
                     stats["timed_out"] += 1
                 continue
             if task.state in (TaskState.QUEUED, TaskState.INPUT_REQUIRED):
-                # Queued waits on an agent to appear; input_required waits on a human.
+                # Queued waits on an agent to appear; input_required waits on a human —
+                # but not forever: a stranded question failed one task for 41 minutes
+                # before anyone noticed. Fail with the question in the error so the
+                # requester sees WHAT was asked, not just that time passed.
+                asked_at = task.input_required_at or task.claimed_at or task.created_at
+                if task.state is TaskState.INPUT_REQUIRED and ref - asked_at > INPUT_REQUIRED_TTL_S:
+                    question = (task.progress_msg or "").removeprefix("awaiting input: ")
+                    with contextlib.suppress(HubError):
+                        self._finish(
+                            task.id,
+                            TaskState.FAILED,
+                            error=(
+                                "no input arrived within "
+                                f"{int(INPUT_REQUIRED_TTL_S / 60)}m; the worker was "
+                                f"asking: {question[:300]}"
+                            ),
+                        )
+                        stats["timed_out"] += 1
+                    continue
                 if task.state is TaskState.QUEUED:
                     self._announce_task(task)
                 continue

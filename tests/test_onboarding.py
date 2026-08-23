@@ -109,4 +109,4 @@ def test_openrouter_example_config_reads_key_from_env(monkeypatch) -> None:
     assert cfg.backend["base_url"] == "https://openrouter.ai/api/v1"
     raw = (root / "examples" / "agents" / "openrouter-worker.toml").read_text()
     # No `api_key = "..."` assignment (a key literal); only `api_key_env` is used.
-    assert not re.search(r'^\s*api_key\s*=', raw, re.MULTILINE)
+    assert not re.search(r"^\s*api_key\s*=", raw, re.MULTILINE)

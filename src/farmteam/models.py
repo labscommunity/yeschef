@@ -19,6 +19,14 @@ def now() -> float:
     return time.time()
 
 
+def _iso(ts: float | None) -> str | None:
+    if not ts:
+        return None
+    import datetime as _dt
+
+    return _dt.datetime.fromtimestamp(ts, _dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def new_id(prefix: str, length: int = 10) -> str:
     body = "".join(secrets.choice(_ALPHABET) for _ in range(length))
     return f"{prefix}_{body}"
@@ -111,6 +119,10 @@ MAX_LONG_POLL_S = 60.0
 MAX_ARTIFACT_BYTES = 32 * 1024 * 1024
 
 DEFAULT_TASK_TIMEOUT_S = 3600.0
+
+INPUT_REQUIRED_TTL_S = 30 * 60.0
+"""A parked question fails the task after this long — stranded input_required tasks
+sat for 41 minutes with nobody notified before this existed."""
 
 DEFAULT_MAX_ROOM_MESSAGES = 200
 """Backstop applied to any room created without a message cap.
@@ -212,10 +224,16 @@ class Agent:
         return AgentStatus.ONLINE
 
     def matches(self, selector: str) -> bool:
-        """`name` match, or `tag:value` / bare tag selector."""
-        if selector == self.name:
-            return True
-        return selector in self.tags
+        """`name` match, or `tag:value` / bare tag selector.
+
+        `a|b` is a union: any part matching means the agent matches, so tag-faithful
+        dispatch can still spill onto idle capacity (`tier:fast|tier:build`).
+        """
+        return any(
+            part == "*" or part == self.name or part in self.tags
+            for part in (p.strip() for p in selector.split("|"))
+            if part
+        )
 
     def to_dict(self, ref: float | None = None) -> dict:
         return {
@@ -225,6 +243,7 @@ class Agent:
             "backend": self.backend,
             "tags": list(self.tags),
             "status": str(self.status(ref)),
+            "heartbeat_age_s": round((ref if ref is not None else now()) - self.last_seen, 1),
             "last_seen": self.last_seen,
             "created_at": self.created_at,
         }
@@ -298,6 +317,10 @@ class Task:
     priority: int = 0
     timeout_s: float = DEFAULT_TASK_TIMEOUT_S
     dedupe_key: str | None = None
+    project: str | None = None
+    output_mode: str | None = None
+    data: str | None = None
+    input_required_at: float | None = None
     room_id: str | None = None
     progress_pct: float | None = None
     progress_msg: str | None = None
@@ -317,6 +340,9 @@ class Task:
             "state": str(self.state),
             "assignee": self.assignee,
             "selector": self.selector,
+            "project": self.project,
+            "output_mode": self.output_mode,
+            "data": self.data,
             "priority": self.priority,
             "timeout_s": self.timeout_s,
             "room_id": self.room_id,
@@ -327,6 +353,63 @@ class Task:
             "created_at": self.created_at,
             "claimed_at": self.claimed_at,
             "finished_at": self.finished_at,
+            "created_iso": _iso(self.created_at),
+            "claimed_iso": _iso(self.claimed_at),
+            "finished_iso": _iso(self.finished_at),
+        }
+
+    def to_summary(self) -> dict:
+        """Slim view for acks, waits, and listings — no spec or result bodies.
+
+        The spec is text the caller wrote and the result has its own tool; echoing
+        either in every reply re-bills an orchestrating model for its own words on
+        each poll of a long task.
+        """
+        return {
+            "id": self.id,
+            "title": self.title,
+            "state": str(self.state),
+            "assignee": self.assignee,
+            "created_by": self.created_by,
+            "project": self.project,
+            "priority": self.priority or None,
+            "room_id": self.room_id,
+            "progress": {"pct": self.progress_pct, "message": self.progress_msg},
+            "error": self.error,
+            "attempts": self.attempts,
+            "created_at": self.created_at,
+            "finished_at": self.finished_at,
+            "input_expires_at": (
+                round(
+                    (self.input_required_at or self.claimed_at or self.created_at)
+                    + INPUT_REQUIRED_TTL_S,
+                    1,
+                )
+                if str(self.state) == "input_required"
+                else None
+            ),
+            "flags": [
+                k
+                for k in (
+                    "truncated",
+                    "no_files",
+                    "all_tools_failed",
+                    "code_in_text_only",
+                    "unverified_claims",
+                    "tool_text_unparsed",
+                    "echoes_spec",
+                    "partial",
+                )
+                if (self.result or {}).get(k)
+            ]
+            or None,
+            "age_s": round(now() - self.created_at, 1) if self.created_at else None,
+            "ran_s": (
+                round(self.finished_at - self.claimed_at, 1)
+                if self.finished_at and self.claimed_at
+                else None
+            ),
+            "files": len((self.result or {}).get("files") or []),
         }
 
 

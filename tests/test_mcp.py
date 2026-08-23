@@ -223,7 +223,11 @@ async def test_observer_can_interject_in_a_dialogue(mcp_client) -> None:
     assert store._floor_holder(room_id) == "alpha"
 
 
-async def test_set_identity_renames_the_session(mcp_client) -> None:
+async def test_set_identity_never_hijacks_the_shared_default(mcp_client) -> None:
+    """Renaming away from the shared default mints a FRESH identity — history
+    created as claude:local must stay claude:local (a lab sweeper renaming itself
+    once rewrote every session's created_by). Subsequent renames of the private
+    identity carry membership as before."""
     client, store = mcp_client
     await client.call_tool("send_message", {"to": "alpha", "message": "hi"})
     renamed = await client.call_tool("set_identity", {"label": "mac-mini-main"})
@@ -232,9 +236,17 @@ async def test_set_identity_renames_the_session(mcp_client) -> None:
     who = await client.call_tool("whoami", {})
     assert who.data["identity"] == "claude:mac-mini-main"
 
-    rooms = await client.call_tool("list_rooms", {})
-    assert len(rooms.data["rooms"]) == 1
+    # the DM belongs to the shared default, which still exists untouched
+    assert store.get_agent("claude:test") is not None
     assert store.get_agent("claude:mac-mini-main") is not None
+    rooms = await client.call_tool("list_rooms", {})
+    assert rooms.data["rooms"] == []
+
+    # a rename FROM a private identity still carries membership
+    await client.call_tool("send_message", {"to": "alpha", "message": "hi again"})
+    await client.call_tool("set_identity", {"label": "mac-mini-2"})
+    rooms2 = await client.call_tool("list_rooms", {})
+    assert len(rooms2.data["rooms"]) == 1
 
 
 async def test_task_room_opens_a_conversation_on_a_running_task(mcp_client) -> None:

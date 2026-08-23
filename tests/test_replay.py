@@ -102,7 +102,8 @@ def test_lifetime_stats_come_from_the_durable_record() -> None:
         assert stats["tasks_completed"] == 1
         assert stats["work_seconds"] >= 0
         line = store.format_stats(stats)
-        assert "1 tasks" in line and "your hardware" in line
+        assert "1 tasks completed" in line and "local compute" in line
+        assert stats["task_tokens"] == 500  # task tokens tracked distinctly from rooms
     finally:
         store.close()
 

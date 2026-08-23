@@ -314,9 +314,9 @@ class AgentClient:
         )
         return data["task"]
 
-    async def fail(self, task_id: str, error: str) -> dict:
+    async def fail(self, task_id: str, error: str, result: dict | None = None) -> dict:
         data = await self._request(
-            "POST", f"/tasks/{task_id}/fail", json=self._as_me({"error": error})
+            "POST", f"/tasks/{task_id}/fail", json=self._as_me({"error": error, "result": result})
         )
         return data["task"]
 
