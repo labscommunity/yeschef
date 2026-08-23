@@ -1,12 +1,12 @@
-"""``farmteam`` — set up a hub, bring a worker online, and drive the fleet.
+"""``yeschef`` — open the kitchen, clock a cook in, and run the line.
 
 Onboarding is meant to be two commands total:
 
     # on the hub machine (where Claude Code runs)
-    farmteam up
+    yeschef up
 
     # on each worker (auto-detects the local model)
-    farmteam join --hub http://<hub> --token <printed by up>
+    yeschef join --hub http://<hub> --token <printed by up>
 
 Everything else (submit, ask, watch, agents, tasks) talks to the hub over the same MCP
 endpoint Claude Code uses, so the user's CLI needs no token of its own.
@@ -36,7 +36,7 @@ from .agent import AgentConfig, run_agent
 from .agent.detect import autodetect, preflight, probe
 
 app = typer.Typer(
-    help="Task dispatch and multi-agent conversation hub for Claude Code + local AI.",
+    help="Fire work to a kitchen of local AI cooks from Claude Code (and back).",
     no_args_is_help=True,
     add_completion=False,
 )
@@ -100,7 +100,7 @@ def _mcp(tool: str, arguments: dict, *, identity: str | None = None, hub: str | 
         console.print(
             f"[red]could not reach the hub[/red] at {_hub_url(hub)} — {type(exc).__name__}: {exc}"
         )
-        console.print("Is it running? Start one with [cyan]farmteam up[/cyan].")
+        console.print("Is it running? Start one with [cyan]yeschef up[/cyan].")
         raise typer.Exit(1) from exc
 
 
@@ -111,7 +111,7 @@ def _wire_claude_code(mcp_url: str) -> None:
     if shutil.which("claude") is None:
         console.print(
             "[yellow]note:[/yellow] the `claude` CLI is not on PATH, so I did not wire it up. "
-            f"Add it yourself with:\n  [cyan]claude mcp add --transport http farmteam "
+            f"Add it yourself with:\n  [cyan]claude mcp add --transport http yeschef "
             f"{mcp_url}[/cyan]"
         )
         return
@@ -124,7 +124,7 @@ def _wire_claude_code(mcp_url: str) -> None:
             "user",
             "--transport",
             "http",
-            "farmteam",
+            "yeschef",
             mcp_url,
         ],
         capture_output=True,
@@ -132,32 +132,32 @@ def _wire_claude_code(mcp_url: str) -> None:
     )
     if result.returncode == 0:
         console.print(
-            "[green]✓[/green] wired into Claude Code (user scope) as [bold]farmteam[/bold]"
+            "[green]✓[/green] wired into Claude Code (user scope) as [bold]yeschef[/bold]"
         )
     elif "already exists" in (result.stderr + result.stdout).lower():
-        console.print("[green]✓[/green] already wired into Claude Code as [bold]farmteam[/bold]")
+        console.print("[green]✓[/green] already wired into Claude Code as [bold]yeschef[/bold]")
     else:
         console.print(
             "[yellow]note:[/yellow] could not wire Claude Code automatically. Run:\n"
-            f"  [cyan]claude mcp add --transport http farmteam {mcp_url}[/cyan]"
+            f"  [cyan]claude mcp add --transport http yeschef {mcp_url}[/cyan]"
         )
 
 
 CODEX_MCP_BLOCK = """
-[mcp_servers.farmteam]
-command = "farmteam"
+[mcp_servers.yeschef]
+command = "yeschef"
 args = ["mcp-proxy", "--hub", "{hub_url}"]
 """
 
 
-def codex_config_with_farmteam(existing: str, hub_url: str) -> str | None:
-    """Return the Codex config.toml text with farmteam wired, or None if already there.
+def codex_config_with_yeschef(existing: str, hub_url: str) -> str | None:
+    """Return the Codex config.toml text with yeschef wired, or None if already there.
 
-    Codex speaks stdio MCP; the entry launches `farmteam mcp-proxy`, which bridges
+    Codex speaks stdio MCP; the entry launches `yeschef mcp-proxy`, which bridges
     stdio to the hub's HTTP endpoint. Append-only on purpose: rewriting a user's TOML
     through a parser risks mangling comments and formatting they care about.
     """
-    if "[mcp_servers.farmteam]" in existing:
+    if "[mcp_servers.yeschef]" in existing:
         return None
     block = CODEX_MCP_BLOCK.format(hub_url=hub_url)
     if existing and not existing.endswith("\n"):
@@ -170,30 +170,30 @@ def _wire_codex(hub_url: str) -> None:
     config_path = codex_home / "config.toml"
     if shutil.which("codex") is None and not codex_home.exists():
         return  # no Codex on this machine; stay quiet
-    updated = codex_config_with_farmteam(
+    updated = codex_config_with_yeschef(
         config_path.read_text() if config_path.exists() else "", hub_url
     )
     if updated is None:
-        console.print("[green]✓[/green] Codex already wired to [bold]farmteam[/bold]")
+        console.print("[green]✓[/green] Codex already wired to [bold]yeschef[/bold]")
         return
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(updated)
     console.print(
-        f"[green]✓[/green] wired into Codex ({config_path}) via [bold]farmteam mcp-proxy[/bold]"
+        f"[green]✓[/green] wired into Codex ({config_path}) via [bold]yeschef mcp-proxy[/bold]"
     )
 
 
 def _serve_hub(host: str, port: int, db: str, cfg: settings.Settings) -> None:
     import uvicorn
 
-    os.environ["FARMTEAM_DB"] = db
+    os.environ["YESCHEF_DB"] = db
     if cfg.admin_token:
-        os.environ.setdefault("FARMTEAM_ADMIN_TOKEN", cfg.admin_token)
+        os.environ.setdefault("YESCHEF_ADMIN_TOKEN", cfg.admin_token)
     if cfg.register_token:
-        os.environ.setdefault("FARMTEAM_REGISTER_TOKEN", cfg.register_token)
+        os.environ.setdefault("YESCHEF_REGISTER_TOKEN", cfg.register_token)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     uvicorn.run(
-        "farmteam.hub.app:app_factory",
+        "yeschef.hub.app:app_factory",
         host=host,
         port=port,
         factory=True,
@@ -206,16 +206,16 @@ def up(
     port: int = typer.Option(8787, help="Port to serve on."),
     host: str = typer.Option("0.0.0.0", help="Bind address. LAN/Tailscale only — never funnel."),
     advertise: str = typer.Option(
-        None, help="URL workers should use to reach this hub (default: best-guess LAN address)."
+        None, help="URL cooks should use to reach this hub (default: best-guess LAN address)."
     ),
     detach: bool = typer.Option(False, "--detach", "-d", help="Run in the background and return."),
     open_mode: bool = typer.Option(
         False, "--open", help="Skip token generation — anyone on the network can drive the hub."
     ),
     no_wire: bool = typer.Option(False, "--no-wire", help="Do not touch the Claude Code config."),
-    db: str = typer.Option(None, help="SQLite path (default: <farmteam home>/hub.db)."),
+    db: str = typer.Option(None, help="SQLite path (default: <yeschef home>/hub.db)."),
 ) -> None:
-    """Start the hub, wire it into Claude Code, and print the worker join command."""
+    """Open the kitchen: start the hub, wire it into Claude Code, print the cook clock-in line."""
     db = db or str(settings.home() / "hub.db")
     cfg = settings.load()
     if not open_mode:
@@ -233,17 +233,17 @@ def up(
         _wire_claude_code(mcp_url)
         _wire_codex(cfg.hub_url)
 
-    join = f"farmteam join --hub {cfg.advertise_url}"
+    join = f"yeschef join --hub {cfg.advertise_url}"
     if cfg.register_token:
         join += f" --token {cfg.register_token}"
     console.print(
         Panel(
-            f"[bold]Run this on each worker node[/bold] (auto-detects the local model):\n\n"
+            f"[bold]Clock a cook in on each machine[/bold] (auto-detects the local model):\n\n"
             f"  [cyan]{join}[/cyan]\n\n"
             f"On a Tailnet, swap the host for the machine's MagicDNS name.\n"
-            f"Talk to the fleet from here with [cyan]farmteam ask[/cyan] / "
-            f"[cyan]submit[/cyan] / [cyan]agents[/cyan].",
-            title="farmteam is up",
+            f"Run the line from here with [cyan]yeschef ask[/cyan] / "
+            f"[cyan]submit[/cyan] / [cyan]cooks[/cyan].",
+            title="yeschef — kitchen open",
             border_style="green",
         )
     )
@@ -268,7 +268,7 @@ def up(
         _wait_healthy(cfg.hub_url)
         console.print(
             f"[green]✓[/green] hub running in the background (pid {proc.pid}), logging to "
-            f"{proc.log}\n  stop it with [cyan]farmteam down[/cyan]."
+            f"{proc.log}\n  stop it with [cyan]yeschef down[/cyan]."
         )
         return
 
@@ -281,7 +281,7 @@ def up(
 
 @app.command("down")
 def down() -> None:
-    """Stop the hub and any agents started with --detach on this machine."""
+    """Close the kitchen: stop the hub and any cooks started with --detach on this machine."""
     stopped = procs.stop_all()
     if not stopped:
         console.print("nothing running in the background here.")
@@ -336,12 +336,12 @@ def join(
     detach: bool = typer.Option(False, "--detach", "-d", help="Run in the background and return."),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
-    """Bring a worker online — from a local model server or a cloud provider.
+    """Clock a cook in — from a local model server or a cloud provider.
 
     Local is the default (auto-detected). For a cloud provider, pass --provider (which
     sets base_url and the key env var for you) and --model, e.g.:
 
-        farmteam join --provider openrouter --model meta-llama/llama-3.3-70b-instruct
+        yeschef join --provider openrouter --model meta-llama/llama-3.3-70b-instruct
     """
     cfg = settings.load()
     hub = hub or cfg.hub_url
@@ -401,8 +401,8 @@ def join(
         if provider and provider.lower() == "openrouter":
             # Optional attribution headers OpenRouter uses for its rankings; harmless.
             backend_cfg["extra_headers"] = {
-                "HTTP-Referer": "https://github.com/labscommunity/farmteam",
-                "X-Title": "farmteam",
+                "HTTP-Referer": "https://github.com/labscommunity/yeschef",
+                "X-Title": "yeschef",
             }
     console.print("verifying the model answers…")
     ok, message = asyncio.run(preflight(backend_cfg))
@@ -417,7 +417,7 @@ def join(
         tags.append(f"tier:{tier}")
     tags.append(f"node:{name}")
 
-    # Remember hub + token so a plain `farmteam join` works next time, and so
+    # Remember hub + token so a plain `yeschef join` works next time, and so
     # `ask`/`agents`/etc. on this box point at the right hub.
     cfg.hub_url = hub
     if token:
@@ -460,7 +460,7 @@ def join(
         proc = procs.spawn(f"agent-{name}", "agent", command)
         console.print(
             f"[green]✓[/green] [bold]{name}[/bold] running in the background (pid {proc.pid}), "
-            f"logging to {proc.log}\n  stop it with [cyan]farmteam down[/cyan]."
+            f"logging to {proc.log}\n  stop it with [cyan]yeschef down[/cyan]."
         )
         return
 
@@ -490,7 +490,7 @@ def _run_worker(agent_config: AgentConfig, verbose: bool) -> None:
 def doctor() -> None:
     """Diagnose a setup: config, hub reachability, and local model servers."""
     cfg = settings.load()
-    console.print("[bold]farmteam doctor[/bold]\n")
+    console.print("[bold]yeschef doctor[/bold]\n")
 
     ok = "[green]✓[/green]"
     bad = "[red]✗[/red]"
@@ -499,8 +499,7 @@ def doctor() -> None:
         console.print(f"{ok} config at {settings.config_path()}")
     else:
         console.print(
-            f"{bad} no config yet — run [cyan]farmteam up[/cyan] (hub) or "
-            f"[cyan]join[/cyan] (worker)"
+            f"{bad} no config yet — run [cyan]yeschef up[/cyan] (hub) or [cyan]join[/cyan] (worker)"
         )
     console.print(f"    hub_url: {cfg.hub_url}")
     console.print(f"    tokens:  {'set' if cfg.admin_token or cfg.register_token else 'OPEN MODE'}")
@@ -528,12 +527,12 @@ def doctor() -> None:
 
     if shutil.which("claude"):
         listed = subprocess.run(["claude", "mcp", "list"], capture_output=True, text=True)
-        if "farmteam" in (listed.stdout + listed.stderr):
-            console.print(f"{ok} Claude Code is wired to farmteam")
+        if "yeschef" in (listed.stdout + listed.stderr):
+            console.print(f"{ok} Claude Code is wired to yeschef")
         else:
             console.print(
                 "[dim]•[/dim] Claude Code present but not wired — run "
-                "[cyan]farmteam up[/cyan] or add it manually"
+                "[cyan]yeschef up[/cyan] or add it manually"
             )
     else:
         console.print(
@@ -542,12 +541,12 @@ def doctor() -> None:
 
     codex_config = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser() / "config.toml"
     if codex_config.exists():
-        wired = "[mcp_servers.farmteam]" in codex_config.read_text()
+        wired = "[mcp_servers.yeschef]" in codex_config.read_text()
         mark = ok if wired else "[dim]•[/dim]"
         note = (
             "wired via mcp-proxy"
             if wired
-            else "present but not wired — run [cyan]farmteam up[/cyan]"
+            else "present but not wired — run [cyan]yeschef up[/cyan]"
         )
         console.print(f"{mark} Codex {note}")
 
@@ -555,11 +554,12 @@ def doctor() -> None:
 # =============================================================== interaction
 
 
-@app.command("agents")
-def list_agents(hub: str = typer.Option(None)) -> None:
-    """List agents on the fleet."""
+@app.command("cooks")
+@app.command("agents", hidden=True)  # muscle-memory alias
+def list_cooks(hub: str = typer.Option(None)) -> None:
+    """List the cooks on the line."""
     data = _mcp("list_agents", {}, hub=hub)
-    table = Table("name", "kind", "node", "backend", "tags", "status")
+    table = Table("cook", "kind", "station", "stove", "tags", "status")
     for agent in data["agents"]:
         colour = {"online": "green", "busy": "yellow"}.get(agent["status"], "dim")
         table.add_row(
@@ -581,7 +581,7 @@ def submit(
     title: str = typer.Option(None, help="Short title (default: first line of the spec)."),
     hub: str = typer.Option(None),
 ) -> None:
-    """Dispatch a background task and print its id (check it with `task`)."""
+    """Fire a ticket to a cook and print its id (check it with `task`)."""
     if not to and not tier:
         console.print("[red]pick a target[/red]: --to <agent> or --tier <tier>")
         raise typer.Exit(1)
@@ -595,12 +595,12 @@ def submit(
         f"[green]dispatched[/green] [bold]{data['task_id']}[/bold] → "
         f"{data['task']['assignee'] or data['task']['selector']}"
     )
-    console.print(f"  check it: [cyan]farmteam task {data['task_id']}[/cyan]")
+    console.print(f"  check it: [cyan]yeschef task {data['task_id']}[/cyan]")
 
 
 @app.command("result")
 def result(task_id: str, hub: str = typer.Option(None)) -> None:
-    """Print a task's result (or why it isn't ready)."""
+    """Print a ticket's plate (or why it isn't up yet)."""
     data = _mcp("task_result", {"task_id": task_id}, hub=hub)
     if not data["ready"]:
         console.print(f"[yellow]{data['state']}[/yellow] — not finished yet")
@@ -614,12 +614,12 @@ def result(task_id: str, hub: str = typer.Option(None)) -> None:
 
 @app.command("send")
 def send(agent: str, message: str, hub: str = typer.Option(None)) -> None:
-    """Send a message to an agent without waiting for the reply."""
+    """Send a message to a cook without waiting for the reply."""
     data = _mcp(
         "send_message", {"to": agent, "message": message}, identity=OPERATOR_IDENTITY, hub=hub
     )
     console.print(f"[green]sent[/green] to {agent} (room {data['room_id']})")
-    console.print(f"  read the reply: [cyan]farmteam watch {data['room_id']}[/cyan]")
+    console.print(f"  read the reply: [cyan]yeschef watch {data['room_id']}[/cyan]")
 
 
 @app.command("ask")
@@ -629,7 +629,7 @@ def ask(
     wait: float = typer.Option(45.0, help="Seconds to wait for the reply."),
     hub: str = typer.Option(None),
 ) -> None:
-    """Send a message to an agent and wait for its reply."""
+    """Send a message to a cook and wait for its reply."""
 
     async def _ask():
         from fastmcp import Client
@@ -678,7 +678,7 @@ def dialogue(
     ),
     hub: str = typer.Option(None),
 ) -> None:
-    """Have two or more local agents converse autonomously toward a goal."""
+    """Have two or more cooks talk a question over on their own toward a goal."""
     args = {"participants": agents, "goal": goal, "max_messages": max_messages}
     if stop_phrase:
         args["stop_phrase"] = stop_phrase
@@ -688,7 +688,7 @@ def dialogue(
     if watch or record:
         _follow_room(room_id, hub, record=record)
     else:
-        console.print(f"  watch it: [cyan]farmteam watch {room_id}[/cyan]")
+        console.print(f"  watch it: [cyan]yeschef watch {room_id}[/cyan]")
 
 
 @app.command("watch")
@@ -740,7 +740,7 @@ def _save_transcript(room_id: str, path: str, hub: str | None, complete: bool) -
     target = save_transcript(path, payload)
     note = "" if complete else " (room still open — partial transcript)"
     console.print(f"[green]recorded[/green] {len(payload['messages'])} turns → {target}{note}")
-    console.print(f"  replay it: [cyan]farmteam replay {target}[/cyan]")
+    console.print(f"  replay it: [cyan]yeschef replay {target}[/cyan]")
 
 
 @app.command("replay")
@@ -792,15 +792,15 @@ def mcp_proxy(hub: str = typer.Option(None, help="Hub URL (default: the configur
     except ImportError:  # older fastmcp
         from fastmcp import FastMCP
 
-        proxy = FastMCP.as_proxy(_mcp_url(hub), name="farmteam")
+        proxy = FastMCP.as_proxy(_mcp_url(hub), name="yeschef")
     else:
-        proxy = create_proxy(_mcp_url(hub), name="farmteam")
+        proxy = create_proxy(_mcp_url(hub), name="yeschef")
     proxy.run(show_banner=False)
 
 
 @app.command("stats")
 def stats(hub: str = typer.Option(None)) -> None:
-    """Show what the farm team has done for you, lifetime."""
+    """Show what the kitchen has cooked for you, lifetime."""
     try:
         health = httpx.get(f"{_hub_url(hub)}/healthz", timeout=5.0).json()
     except Exception as exc:  # noqa: BLE001
@@ -837,7 +837,7 @@ def stats(hub: str = typer.Option(None)) -> None:
 
 @app.command("tasks")
 def list_tasks(state: str = typer.Option(None), hub: str = typer.Option(None)) -> None:
-    """List tasks."""
+    """List tickets."""
     args = {"state": state} if state else {}
     data = _mcp("list_tasks", args, hub=hub)
     table = Table("id", "title", "state", "assignee", "progress")
@@ -855,7 +855,7 @@ def list_tasks(state: str = typer.Option(None), hub: str = typer.Option(None)) -
 
 @app.command("task")
 def show_task(task_id: str, hub: str = typer.Option(None)) -> None:
-    """Show one task with its progress and event history."""
+    """Show one ticket with its progress and event history."""
     data = _mcp("task_status", {"task_id": task_id, "verbose": True}, hub=hub)
     task = data["task"]
     console.print(
@@ -897,7 +897,7 @@ def list_rooms(
 
 @app.command("cancel")
 def cancel_task(task_id: str, hub: str = typer.Option(None)) -> None:
-    """Cancel a task."""
+    """Cancel a ticket (86 it)."""
     data = _mcp("cancel_task", {"task_id": task_id}, identity=OPERATOR_IDENTITY, hub=hub)
     console.print(f"{task_id} → [yellow]{data['task']['state']}[/yellow]")
 
@@ -911,26 +911,26 @@ def install_skill(
         False, "--user", help="Install for all projects (~/.claude/skills/)."
     ),
 ) -> None:
-    """Install the Claude Code skill and the farmteam-watcher subagent."""
+    """Install the Claude Code skill and the yeschef-expediter subagent."""
     from importlib import resources
     from pathlib import Path
 
     claude_root = Path("~/.claude").expanduser() if user else Path(project) / ".claude"
 
-    skill_target = claude_root / "skills" / "farmteam"
+    skill_target = claude_root / "skills" / "yeschef"
     skill_target.mkdir(parents=True, exist_ok=True)
-    for entry in resources.files("farmteam.resources.skill").iterdir():
+    for entry in resources.files("yeschef.resources.skill").iterdir():
         if entry.is_file() and not entry.name.startswith("__"):
             (skill_target / entry.name).write_text(entry.read_text())
     console.print(f"[green]✓[/green] skill → {skill_target}")
 
     agents_target = claude_root / "agents"
     agents_target.mkdir(parents=True, exist_ok=True)
-    for entry in resources.files("farmteam.resources.agents").iterdir():
+    for entry in resources.files("yeschef.resources.agents").iterdir():
         if entry.is_file() and not entry.name.startswith("__"):
             (agents_target / entry.name).write_text(entry.read_text())
     console.print(
-        f"[green]✓[/green] farmteam-watcher subagent → {agents_target} "
+        f"[green]✓[/green] yeschef-expediter subagent → {agents_target} "
         "(dispatched tasks can appear in the subagent panel)"
     )
     console.print("  Claude Code picks both up in that scope on its next run.")
@@ -943,12 +943,12 @@ def install_skill(
 def hub_serve(
     host: str = typer.Option("0.0.0.0"),
     port: int = typer.Option(8787),
-    db: str = typer.Option(None, help="SQLite path (default: <farmteam home>/hub.db)."),
+    db: str = typer.Option(None, help="SQLite path (default: <yeschef home>/hub.db)."),
 ) -> None:
     """Run the hub in the foreground (advanced; `up` wraps this with setup)."""
     cfg = settings.load()
     db = db or str(settings.home() / "hub.db")
-    console.print(f"[bold]farmteam hub[/bold] → http://{host}:{port}  (MCP at /mcp)")
+    console.print(f"[bold]yeschef hub[/bold] → http://{host}:{port}  (MCP at /mcp)")
     if not cfg.admin_token and not cfg.register_token:
         console.print("[yellow]open mode — no tokens set.[/yellow]")
     _serve_hub(host, port, db, cfg)
@@ -1005,8 +1005,8 @@ def _run_detached_worker(
         backend_cfg["api_key"] = os.environ.get(api_key_env)
     if provider and provider.lower() == "openrouter":
         backend_cfg["extra_headers"] = {
-            "HTTP-Referer": "https://github.com/labscommunity/farmteam",
-            "X-Title": "farmteam",
+            "HTTP-Referer": "https://github.com/labscommunity/yeschef",
+            "X-Title": "yeschef",
         }
     _run_worker(
         AgentConfig(
@@ -1039,7 +1039,7 @@ def main() -> None:
 def legacy_main() -> None:
     """Entry point for the deprecated `cascadia-tasks` command name."""
     console.print(
-        "[yellow]note:[/yellow] `cascadia-tasks` is now [bold]farmteam[/bold] — "
+        "[yellow]note:[/yellow] `cascadia-tasks` is now [bold]yeschef[/bold] — "
         "same tool, new name. This alias keeps working for now.\n"
     )
     app()

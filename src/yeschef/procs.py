@@ -106,4 +106,4 @@ def stop_all() -> list[str]:
 
 def cli_executable() -> list[str]:
     """How to re-invoke this CLI for a detached child."""
-    return [sys.executable, "-m", "farmteam"]
+    return [sys.executable, "-m", "yeschef"]

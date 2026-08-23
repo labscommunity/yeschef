@@ -7,10 +7,10 @@ from collections.abc import AsyncIterator
 import pytest
 from fastmcp import Client
 
-from farmteam.hub import HubConfig, Store
-from farmteam.hub.events import EventBus
-from farmteam.hub.mcp_server import build_mcp
-from farmteam.models import TaskState
+from yeschef.hub import HubConfig, Store
+from yeschef.hub.events import EventBus
+from yeschef.hub.mcp_server import build_mcp
+from yeschef.models import TaskState
 
 EXPECTED_TOOLS = {
     "set_identity",

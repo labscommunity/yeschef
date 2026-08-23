@@ -6,8 +6,8 @@ import os
 
 import pytest
 
-from farmteam.agent.backends.base import ToolCall
-from farmteam.tools.executor import ToolExecutor, ToolsConfig
+from yeschef.agent.backends.base import ToolCall
+from yeschef.tools.executor import ToolExecutor, ToolsConfig
 
 posix_shell = pytest.mark.skipif(os.name == "nt", reason="executes a POSIX shell command")
 

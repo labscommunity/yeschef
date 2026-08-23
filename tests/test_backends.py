@@ -7,10 +7,10 @@ import json
 import httpx
 import pytest
 
-from farmteam.agent.backends import build_backend
-from farmteam.agent.backends.anthropic_compat import AnthropicCompatBackend
-from farmteam.agent.backends.base import ToolCall, ToolResult, Turn
-from farmteam.agent.backends.openai_compat import OpenAICompatBackend
+from yeschef.agent.backends import build_backend
+from yeschef.agent.backends.anthropic_compat import AnthropicCompatBackend
+from yeschef.agent.backends.base import ToolCall, ToolResult, Turn
+from yeschef.agent.backends.openai_compat import OpenAICompatBackend
 
 TOOL_SPECS = [
     {
@@ -304,11 +304,11 @@ async def test_extra_headers_reach_the_provider() -> None:
         "https://openrouter.ai/api/v1",
         "meta-llama/llama-3.3-70b-instruct",
         api_key="sk-or-test",
-        extra_headers={"HTTP-Referer": "https://example.com", "X-Title": "farmteam"},
+        extra_headers={"HTTP-Referer": "https://example.com", "X-Title": "yeschef"},
     )
     assert backend._http.headers["authorization"] == "Bearer sk-or-test"
     assert backend._http.headers["http-referer"] == "https://example.com"
-    assert backend._http.headers["x-title"] == "farmteam"
+    assert backend._http.headers["x-title"] == "yeschef"
     await backend.close()
 
 
@@ -319,8 +319,8 @@ async def test_build_backend_threads_extra_headers() -> None:
             "base_url": "https://openrouter.ai/api/v1",
             "model": "m",
             "api_key": "k",
-            "extra_headers": {"X-Title": "farmteam"},
+            "extra_headers": {"X-Title": "yeschef"},
         }
     )
-    assert backend._http.headers["x-title"] == "farmteam"
+    assert backend._http.headers["x-title"] == "yeschef"
     await backend.close()

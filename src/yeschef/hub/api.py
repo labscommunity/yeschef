@@ -36,7 +36,7 @@ AuthHeader = Annotated[str | None, Header(alias="Authorization")]
 
 @dataclass(slots=True)
 class HubConfig:
-    db_path: str = "~/.farmteam/hub.db"
+    db_path: str = "~/.yeschef/hub.db"
     admin_token: str | None = None
     register_token: str | None = None
     sweep_interval_s: float = 10.0
@@ -494,7 +494,7 @@ def create_app(store: Store, config: HubConfig, mcp_app: Any | None = None) -> F
             with contextlib.suppress(asyncio.CancelledError):
                 await sweeper
 
-    app = FastAPI(title="farmteam hub", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="yeschef hub", version="0.1.0", lifespan=lifespan)
 
     @app.exception_handler(HubError)
     async def hub_error_handler(request: Request, exc: HubError) -> JSONResponse:

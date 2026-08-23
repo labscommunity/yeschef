@@ -1,4 +1,4 @@
-"""Local settings shared by every ``farmteam`` command on a machine.
+"""Local settings shared by every ``yeschef`` command on a machine.
 
 `up` and `join` write this file; every other command reads it, so the common case is
 zero flags. Environment variables still win when set, for scripts and overrides.
@@ -17,8 +17,8 @@ from pathlib import Path
 
 
 def env(name: str, default: str | None = None) -> str | None:
-    """FARMTEAM_* first; CASCADIA_TASKS_* still honored for pre-rename deployments."""
-    value = os.environ.get(f"FARMTEAM_{name}")
+    """YESCHEF_* first; CASCADIA_TASKS_* still honored for pre-rename deployments."""
+    value = os.environ.get(f"YESCHEF_{name}")
     if value is not None:
         return value
     return os.environ.get(f"CASCADIA_TASKS_{name}", default)
@@ -28,7 +28,7 @@ def home() -> Path:
     override = env("HOME")
     if override:
         return Path(override).expanduser()
-    new = Path("~/.farmteam").expanduser()
+    new = Path("~/.yeschef").expanduser()
     legacy = Path("~/.cascadia-tasks").expanduser()
     # A machine set up before the rename keeps working without migration.
     if not new.exists() and legacy.exists():

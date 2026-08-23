@@ -23,8 +23,8 @@ def test_plugin_assets_mirror_the_packaged_resources() -> None:
     from top-level dirs. If they drift, plugin users and pip users get different
     behavior — this fails before that ships."""
     pairs = [
-        ("skills/farmteam/SKILL.md", "src/farmteam/resources/skill/SKILL.md"),
-        ("agents/farmteam-watcher.md", "src/farmteam/resources/agents/farmteam-watcher.md"),
+        ("skills/yeschef/SKILL.md", "src/yeschef/resources/skill/SKILL.md"),
+        ("agents/yeschef-expediter.md", "src/yeschef/resources/agents/yeschef-expediter.md"),
     ]
     for plugin_path, resource_path in pairs:
         plugin_text = (ROOT / plugin_path).read_text()

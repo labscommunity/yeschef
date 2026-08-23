@@ -1,20 +1,20 @@
-# A worker backed by a cloud provider (OpenRouter) instead of local hardware.
+# A cook backed by a cloud provider (OpenRouter) instead of local hardware.
 #
-# farmteam workers are OpenAI-compatible HTTP clients, so any hosted provider works:
+# yeschef cooks are OpenAI-compatible HTTP clients, so any hosted provider works:
 # set base_url, and read the key from the environment so it never lands in the file.
 #
 #   export OPENROUTER_API_KEY=sk-or-...
-#   farmteam agent run -c examples/agents/openrouter-worker.toml
+#   yeschef agent run -c examples/agents/openrouter-worker.toml
 #
 # Or skip the file entirely — `join` has a preset:
-#   farmteam join --provider openrouter --model meta-llama/llama-3.3-70b-instruct --tier fast
+#   yeschef join --provider openrouter --model meta-llama/llama-3.3-70b-instruct --tier fast
 #
-# Mixing cloud and local workers on one hub is fine and often the point: route bulk
+# Mixing cloud and local cooks on one hub is fine and often the point: route bulk
 # grunt work to a cheap cloud model, keep the private work on your own machines. Note
-# the honesty ledger — a cloud worker is metered and your data leaves your network,
+# the honesty ledger — a cloud cook is metered and your data leaves your network,
 # the opposite of the local default.
 
-name = "router"
+name = "expo"
 hub = "http://hub-host:8787"
 tags = ["tier:fast", "cloud:openrouter"]
 
@@ -27,12 +27,12 @@ timeout_s = 120
 
 # Optional: OpenRouter uses these for its app-attribution rankings. Harmless to omit.
 [backend.extra_headers]
-"HTTP-Referer" = "https://github.com/labscommunity/farmteam"
-"X-Title" = "farmteam"
+"HTTP-Referer" = "https://github.com/labscommunity/yeschef"
+"X-Title" = "yeschef"
 
 [persona]
 system_prompt = """
-You are router, a cloud-backed agent on the farm team. You handle bulk grunt work —
+You are expo, a cloud-backed cook in the kitchen. You handle bulk grunt work —
 summarization, classification, extraction — quickly and cheaply. Be concise.
 """
 reply_when = "mentioned"

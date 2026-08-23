@@ -1,8 +1,8 @@
-# farmteam — v1 Design Spec
+# yeschef — v1 Design Spec
 
 **Status:** draft for review · 2026-08-20
 **Owner:** t8
-**Repo:** `labscommunity/farmteam` (private)
+**Repo:** `labscommunity/yeschef` (private)
 
 A communication and task-orchestration layer between Claude Code and local AI agents
 running on your own machines. Claude Code stays on the Anthropic API; local agents are
@@ -34,14 +34,14 @@ OpenAI-compatible endpoint). The hub gives both sides a shared fabric for:
 ## 2. Components (one repo, one Python package)
 
 ```
-farmteam/
-├── src/farmteam/
+yeschef/
+├── src/yeschef/
 │   ├── hub/          # FastMCP server + agent-facing HTTP/SSE API + SQLite store
 │   ├── sdk/          # Python client library — THE protocol contract
 │   ├── agent/        # reference harness daemon (uses sdk/)
 │   │   └── backends/ # anthropic_compat, openai_compat (local or cloud), tahoma, cli
 │   ├── tools/        # opt-in worker-side tool executor (shell, file, web_fetch)
-│   └── cli.py        # `farmteam` command
+│   └── cli.py        # `yeschef` command
 ├── SPEC.md
 └── README.md
 ```
@@ -50,7 +50,7 @@ farmteam/
   - `/mcp` — FastMCP HTTP transport, for Claude Code sessions.
   - `/api/v1` — REST + SSE, for agents (harness daemons or anything embedding the SDK).
   - State in SQLite (WAL mode). No other infrastructure.
-- **SDK** — `farmteam.sdk.AgentClient`: register, stream events, send messages,
+- **SDK** — `yeschef.sdk.AgentClient`: register, stream events, send messages,
   claim/update tasks. This is the contract; Tahoma (or anything else) can embed it to
   become a first-class agent without running the harness.
 - **Harness** — reference agent runtime: config file in, named room-participating,
@@ -205,7 +205,7 @@ base_url = "http://localhost:8000/v1"
 model = "qwen3-8b"
 max_context_tokens = 32768
 [persona]
-system_prompt = "You are miner-qwen, a fast reasoning agent on this fleet…"
+system_prompt = "You are miner-qwen, a fast reasoning cook in this kitchen…"
 reply_when = "mentioned"          # mentioned | round_robin | always
 [tools]                           # omit section entirely for chat-only (default)
 allow = ["shell", "file_read"]
@@ -248,7 +248,7 @@ Behavior:
 - **Workers:** three mini-PCs — harness + Ollama; one GPU box — harness + vLLM
   (existing models only; root disk at 98%); Tahoma nodes via SDK or `tahoma` backend.
 - **Claude Code (any machine):**
-  `claude mcp add --transport http farmteam http://mini.local:8787/mcp`
+  `claude mcp add --transport http yeschef http://mini.local:8787/mcp`
 
 ## 9. Milestones
 

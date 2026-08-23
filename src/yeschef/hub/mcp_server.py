@@ -87,19 +87,17 @@ class IdentityResolver:
 
 def build_mcp(store: Store, config: HubConfig) -> FastMCP:
     mcp = FastMCP(
-        name="farmteam",
+        name="yeschef",
         instructions=(
-            "Dispatch tasks to your farm team — AI agents you run yourself, usually local "
-            "models on your own hardware — and "
-            "hold multi-turn conversations with them. When the user asks to fan out, dispatch, "
-            "parallelize, or run work as separate background tasks, these workers are the "
-            "intended executors. submit_task returns immediately with a "
-            "task id; "
+            "Fire work to your kitchen — AI cooks you run yourself, usually local "
+            "models on your own hardware. You are the chef: when the user says to fire, "
+            "send, fan out, or hand work to a cook or the kitchen, these cooks are who "
+            "does it. submit_task fires a ticket and returns its id immediately; "
             "wait_task(id, until='done') long-polls it to completion, and task_status(id) "
-            "spot-checks it at any time, from any session. Use send_message "
-            "for a direct back-and-forth with one agent, create_room/post for group "
-            "conversations, and start_dialogue to have two or more local agents converse "
-            "autonomously while you observe with room_transcript."
+            "checks the pass at any time, from any session. Use send_message "
+            "for a direct back-and-forth with one cook, create_room/post for a group, "
+            "and start_dialogue to have two or more cooks talk a question over on their "
+            "own while you watch with room_transcript."
         ),
     )
     ident = IdentityResolver(store, config.default_identity)
@@ -203,7 +201,7 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
         """List agents on the fleet: name, node, model backend, tags, online status.
 
         Dispatchable workers come first; `claude` kind entries are session identities,
-        not dispatch targets. Pass kind="worker" for just the dispatchable roster.
+        not fire targets. Pass kind="worker" for just the cooks you can fire to.
         """
         ref_agents = [a.to_dict() for a in store.list_agents()]
         if kind:
@@ -354,7 +352,7 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
         Returns as soon as a message lands past from_seq, or when the room archives
         (a bounded dialogue ending), or at the cap with wait_more:true. One call per
         minute instead of transcript polling; hand a long dialogue to the
-        farmteam-watcher subagent, which knows how to use this.
+        yeschef-expediter subagent, which knows how to use this.
         """
         target = store.require_room(room)
         deadline = asyncio.get_running_loop().time() + min(wait_s, MAX_LONG_POLL_S)
@@ -403,7 +401,7 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
         agent. NOTE: the seed goal counts toward max_messages — for N worker turns
         pass max_messages=N+1. Returns immediately; workers reply asynchronously and the first turn
         typically lands within a minute — follow along with wait_room (or hand it to
-        the farmteam-watcher subagent) rather than reporting "running" from the seed
+        the yeschef-expediter subagent) rather than reporting "running" from the seed
         alone. Steer by posting into the room; stop with archive_room.
         """
         me = ident.current()
@@ -423,7 +421,7 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
                 ErrorCode.CONFLICT,
                 f"participant(s) offline: {', '.join(offline)} — a round-robin room "
                 "with a dead member produces silent dead air. Bring them back "
-                "(farmteam doctor on their node) or start without them.",
+                "(yeschef doctor on their node) or start without them.",
                 409,
             )
         if not participants:
@@ -832,7 +830,7 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
         through intermediate transitions (queued→claimed→working) and return only on a
         terminal state or timeout. wait_s is HARD-CAPPED at 60s (staying clear of the
         client's auto-background threshold), so a multi-minute task takes several
-        calls — that is normal, not a stall; hand long builds to the farmteam-watcher
+        calls — that is normal, not a stall; hand long builds to the yeschef-expediter
         subagent instead of re-issuing waits inline. Returns a summary (with progress,
         and the worker's question when state is input_required); fetch the payload
         with task_result once done.

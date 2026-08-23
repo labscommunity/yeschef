@@ -1,4 +1,4 @@
-# farmteam — working agreement
+# yeschef — working agreement
 
 ## Commits (mandatory)
 
@@ -19,11 +19,11 @@
 Read [SPEC.md](SPEC.md) before changing behavior — it is the contract. Three parts of
 one package:
 
-- `src/farmteam/hub/` — the hub: SQLite store, REST + SSE agent API, FastMCP tool
+- `src/yeschef/hub/` — the hub: SQLite store, REST + SSE agent API, FastMCP tool
   surface for Claude Code. Single process, runs on the hub box.
-- `src/farmteam/sdk/` — client library. **This is the protocol contract**; anything
+- `src/yeschef/sdk/` — client library. **This is the protocol contract**; anything
   embedding it becomes a first-class agent. Keep it dependency-light (httpx only).
-- `src/farmteam/agent/` — reference harness daemon + model backends.
+- `src/yeschef/agent/` — reference harness daemon + model backends.
 
 ## Conventions
 
@@ -36,7 +36,7 @@ one package:
   seconds (`float`). Agents never write times.
 - Errors cross the wire as JSON `{"error": {"code": "...", "message": "..."}}` with a
   stable machine-readable `code`.
-- No secrets in the repo. Tokens come from the environment or `~/.farmteam/`.
+- No secrets in the repo. Tokens come from the environment or `~/.yeschef/`.
 
 ## Guardrails
 

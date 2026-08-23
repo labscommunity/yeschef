@@ -1,11 +1,11 @@
 # Running on Windows
 
-farmteam is pure Python and runs on Windows unchanged. The hub and workers behave
+yeschef is pure Python and runs on Windows unchanged. The hub and workers behave
 the same; only the "run it as a service" mechanics differ from launchd/systemd.
 
-For a quick start you don't need a service at all — `farmteam up --detach` (hub) and
-`farmteam join --detach` (worker) run in the background and are stopped with
-`farmteam down`. Use a real service only for machines that must come back after a
+For a quick start you don't need a service at all — `yeschef up --detach` (hub) and
+`yeschef join --detach` (worker) run in the background and are stopped with
+`yeschef down`. Use a real service only for machines that must come back after a
 reboot.
 
 ## Option A — NSSM (simplest persistent service)
@@ -14,15 +14,15 @@ reboot.
 
 ```powershell
 # hub, on the orchestrator
-nssm install farmteam-hub "C:\path\to\.venv\Scripts\farmteam.exe" hub serve --port 8787
-nssm set farmteam-hub AppEnvironmentExtra `
+nssm install yeschef-hub "C:\path\to\.venv\Scripts\yeschef.exe" hub serve --port 8787
+nssm set yeschef-hub AppEnvironmentExtra `
   CASCADIA_TASKS_ADMIN_TOKEN=<token> CASCADIA_TASKS_REGISTER_TOKEN=<token>
-nssm start farmteam-hub
+nssm start yeschef-hub
 
 # worker, on each node (Ollama/vLLM already running locally)
-nssm install farmteam-agent "C:\path\to\.venv\Scripts\farmteam.exe" `
+nssm install yeschef-agent "C:\path\to\.venv\Scripts\yeschef.exe" `
   join --hub http://<hub-host>:8787 --token <register-token>
-nssm start farmteam-agent
+nssm start yeschef-agent
 ```
 
 ## Option B — Task Scheduler (no extra software)
@@ -30,10 +30,10 @@ nssm start farmteam-agent
 Create a task that runs at startup:
 
 ```powershell
-$action  = New-ScheduledTaskAction -Execute "C:\path\to\.venv\Scripts\farmteam.exe" `
+$action  = New-ScheduledTaskAction -Execute "C:\path\to\.venv\Scripts\yeschef.exe" `
                                     -Argument "join --hub http://<hub-host>:8787 --token <token>"
 $trigger = New-ScheduledTaskTrigger -AtStartup
-Register-ScheduledTask -TaskName "farmteam-agent" -Action $action -Trigger $trigger `
+Register-ScheduledTask -TaskName "yeschef-agent" -Action $action -Trigger $trigger `
                        -RunLevel Highest -User "SYSTEM"
 ```
 

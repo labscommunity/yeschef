@@ -1,7 +1,7 @@
 {
   "version": 1,
   "room": {
-    "topic": "dialogue: You are both running inside farmteam right now. Its 15-secon",
+    "topic": "dialogue: You are both running inside yeschef right now. Its 15-secon",
     "policy": {
       "turn_policy": "round_robin",
       "max_messages": 8,
@@ -31,7 +31,7 @@
   "messages": [
     {
       "sender": "claude:tatef",
-      "body": "You are both running inside farmteam right now. Its 15-second demo can show ONE thing: a task dispatched to your hardware, or the two of you arguing. Pick a side and defend it. Do NOT agree yet \u2014 the operator gets the final call.",
+      "body": "You are both running inside yeschef right now. Its 15-second demo can show ONE thing: a task dispatched to your hardware, or the two of you arguing. Pick a side and defend it. Do NOT agree yet \u2014 the operator gets the final call.",
       "created_at": 1787294301.1091356
     },
     {

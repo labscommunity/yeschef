@@ -1,4 +1,4 @@
-# A worker whose engine is the full Claude Code harness running against a LOCAL model.
+# A cook whose engine is the full Claude Code harness running against a LOCAL model.
 #
 # This is the buildout configuration: instead of a chat loop with a few bounded tool
 # calls, the whole task is handed to `claude -p`, which brings its own deep agentic
@@ -6,18 +6,18 @@
 # so it costs no API tokens. Files the run produces in its task workspace are shipped
 # back to the hub for the requester to pull with task_files / task_file.
 #
-#   farmteam agent run -c examples/agents/claude-code-worker.toml
+#   yeschef agent run -c examples/agents/claude-code-worker.toml
 #
 # Swap the command for any agent CLI you prefer (opencode, aider…) — anything that
 # takes a prompt and works in the current directory.
 
-name = "carpenter"
+name = "line-cook"
 hub = "http://hub-host:8787"
 tags = ["tier:build", "agent:claude-code"]
 
 [backend]
 type = "cli"
-model = "claude-code/qwen3:8b"          # label shown on the roster
+model = "claude-code/qwen3:8b"          # label shown on the line
 command = ["claude", "-p", "{prompt}", "--dangerously-skip-permissions"]
 timeout_s = 1800
 
@@ -29,7 +29,7 @@ ANTHROPIC_API_KEY = "ollama"
 
 [persona]
 system_prompt = """
-You are {name}, a build agent on the farm team. You receive complete build tasks.
+You are {name}, a line cook in the kitchen. You receive complete build tasks.
 Create real, working files in your current directory; verify your work; then reply
 with a short summary of what you built.
 """

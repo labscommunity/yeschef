@@ -6,8 +6,8 @@ import re
 
 import pytest
 
-from farmteam import settings
-from farmteam.agent.detect import DetectedBackend
+from yeschef import settings
+from yeschef.agent.detect import DetectedBackend
 
 
 @pytest.fixture
@@ -86,7 +86,7 @@ def test_pick_model_without_a_list_keeps_the_preference() -> None:
 
 
 def test_provider_presets_cover_the_common_clouds() -> None:
-    from farmteam.cli import PROVIDER_PRESETS
+    from yeschef.cli import PROVIDER_PRESETS
 
     assert PROVIDER_PRESETS["openrouter"]["base_url"] == "https://openrouter.ai/api/v1"
     assert PROVIDER_PRESETS["openrouter"]["key_env"] == "OPENROUTER_API_KEY"
@@ -100,7 +100,7 @@ def test_openrouter_example_config_reads_key_from_env(monkeypatch) -> None:
     """The example uses api_key_env so the key never lands in the file."""
     from pathlib import Path
 
-    from farmteam.agent import AgentConfig
+    from yeschef.agent import AgentConfig
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-secret")
     root = Path(__file__).resolve().parent.parent

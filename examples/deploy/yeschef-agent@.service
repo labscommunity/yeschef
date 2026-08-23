@@ -1,21 +1,21 @@
 # Worker agent service, templated on the config name.
 #
-#   sudo cp examples/deploy/farmteam-agent@.service /etc/systemd/system/
-#   sudo systemctl enable --now farmteam-agent@miner-vllm
+#   sudo cp examples/deploy/yeschef-agent@.service /etc/systemd/system/
+#   sudo systemctl enable --now yeschef-agent@miner-vllm
 #
-# The instance name must match a config at /etc/farmteam/<name>.toml.
+# The instance name must match a config at /etc/yeschef/<name>.toml.
 
 [Unit]
-Description=farmteam agent (%i)
+Description=yeschef agent (%i)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=YOU
-WorkingDirectory=/opt/farmteam
-ExecStart=/usr/local/bin/uv run --directory /opt/farmteam \
-    farmteam agent run -c /etc/farmteam/%i.toml
+WorkingDirectory=/opt/yeschef
+ExecStart=/usr/local/bin/uv run --directory /opt/yeschef \
+    yeschef agent run -c /etc/yeschef/%i.toml
 Restart=always
 RestartSec=5
 

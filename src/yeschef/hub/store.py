@@ -723,7 +723,7 @@ class Store:
         if not assignee and not selector:
             # "Whoever is idle": the natural routing intent — first online worker
             # claims it. (Sessions were bounced and had to hand-build union selectors
-            # spanning the roster.)
+            # spanning the line.)
             selector = "*"
         if dedupe_key:
             with self._lock:
@@ -1326,7 +1326,7 @@ class Store:
         ]
 
     def active_task_counts(self) -> dict[str, int]:
-        """Live tasks per assignee, so the roster can show busy/idle directly."""
+        """Live tasks per assignee, so the line can show busy/idle directly."""
         with self._lock:
             rows = self._db.execute(
                 """SELECT assignee, COUNT(*) AS n FROM tasks
@@ -1341,7 +1341,7 @@ class Store:
         return {row["assignee"]: row["n"] for row in rows}
 
     def lifetime_stats(self) -> dict:
-        """What the farm team has done for you, computed from the durable record.
+        """What the kitchen has cooked for you, computed from the durable record.
 
         Derived on demand from tasks/rooms rather than kept as a counter, so it can
         never drift from the truth and needs no migration.
@@ -1402,7 +1402,7 @@ class Store:
             return f"{sec / 3600.0:.1f}h" if sec >= 3600 else f"{sec / 60.0:.0f}m"
 
         line = (
-            f"farm team lifetime: {stats['tasks_completed']} tasks completed · "
+            f"kitchen lifetime: {stats['tasks_completed']} tickets cooked · "
             f"~{stats['task_tokens']:,} tokens generated locally · "
             f"{clock(stats['work_seconds'])} of local compute"
         )

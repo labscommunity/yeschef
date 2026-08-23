@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from farmteam.hub import Store
-from farmteam.models import (
+from yeschef.hub import Store
+from yeschef.models import (
     HEARTBEAT_TTL_S,
     AgentKind,
     HubError,

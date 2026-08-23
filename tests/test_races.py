@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import threading
 
-from farmteam.hub import Store
-from farmteam.hub.events import EventBus
-from farmteam.models import AgentKind, HubError, RoomPolicy, TaskState, TurnPolicy
+from yeschef.hub import Store
+from yeschef.hub.events import EventBus
+from yeschef.models import AgentKind, HubError, RoomPolicy, TaskState, TurnPolicy
 
 ROUNDS = 40
 
