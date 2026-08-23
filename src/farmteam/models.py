@@ -320,6 +320,7 @@ class Task:
     project: str | None = None
     output_mode: str | None = None
     data: str | None = None
+    input_required_at: float | None = None
     room_id: str | None = None
     progress_pct: float | None = None
     progress_msg: str | None = None
@@ -379,7 +380,11 @@ class Task:
             "created_at": self.created_at,
             "finished_at": self.finished_at,
             "input_expires_at": (
-                round((self.claimed_at or self.created_at) + INPUT_REQUIRED_TTL_S, 1)
+                round(
+                    (self.input_required_at or self.claimed_at or self.created_at)
+                    + INPUT_REQUIRED_TTL_S,
+                    1,
+                )
                 if str(self.state) == "input_required"
                 else None
             ),

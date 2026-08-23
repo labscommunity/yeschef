@@ -82,6 +82,9 @@ class Store:
         with _ctx.suppress(_sqlite3.OperationalError):
             self._db.execute("ALTER TABLE tasks ADD COLUMN data TEXT")
             self._db.commit()
+        with _ctx.suppress(_sqlite3.OperationalError):
+            self._db.execute("ALTER TABLE tasks ADD COLUMN input_required_at REAL")
+            self._db.commit()
         self._db.commit()
 
     def close(self) -> None:
@@ -609,7 +612,10 @@ class Store:
                 }
             if all(m in spoken for m in worker_members):
                 self.archive_room(room_id, "stop_phrase")
-            return
+                return
+            # Floor not met: the phrase does NOT end the room yet — but we must still
+            # fall through to the message/token caps below, or a worker looping on the
+            # stop phrase (with another member silent) would grow the room unbounded.
         # A worker restating itself verbatim is a dead debate — archive before it
         # burns the whole budget on repeats (the reader wades through identical turns).
         with self._lock:
@@ -742,30 +748,43 @@ class Store:
                     return existing
         tid = new_id("task")
         ts = now()
-        with self._lock:
-            self._db.execute(
-                """INSERT INTO tasks (id, title, spec, created_by, state, assignee, selector,
-                                      priority, timeout_s, dedupe_key, project,
-                                      output_mode, data, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    tid,
-                    title,
-                    spec,
-                    created_by,
-                    str(TaskState.QUEUED),
-                    assignee,
-                    selector,
-                    priority,
-                    timeout_s,
-                    dedupe_key,
-                    project,
-                    output_mode,
-                    data,
-                    ts,
-                ),
-            )
-            self._db.commit()
+        try:
+            with self._lock:
+                self._db.execute(
+                    """INSERT INTO tasks (id, title, spec, created_by, state, assignee, selector,
+                                          priority, timeout_s, dedupe_key, project,
+                                          output_mode, data, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        tid,
+                        title,
+                        spec,
+                        created_by,
+                        str(TaskState.QUEUED),
+                        assignee,
+                        selector,
+                        priority,
+                        timeout_s,
+                        dedupe_key,
+                        project,
+                        output_mode,
+                        data,
+                        ts,
+                    ),
+                )
+                self._db.commit()
+        except sqlite3.IntegrityError:
+            # The dedupe_key check-then-insert is not atomic under concurrent submits;
+            # a UNIQUE collision means another caller won the race — return their task
+            # rather than 500 (Claude retries dispatches on the hot path).
+            if dedupe_key:
+                with self._lock:
+                    row = self._db.execute(
+                        "SELECT id FROM tasks WHERE dedupe_key = ?", (dedupe_key,)
+                    ).fetchone()
+                if row and (winner := self.get_task(row["id"])) is not None:
+                    return winner
+            raise
         task = self.get_task(tid)
         assert task is not None
         self._log_task(tid, "submitted", {"by": created_by, "target": assignee or selector})
@@ -861,13 +880,15 @@ class Store:
 
     def complete_task(self, task_id: str, agent: str, result: dict | None) -> Task:
         self._require_holder(task_id, agent)
-        return self._finish(task_id, TaskState.COMPLETED, result=result)
+        return self._finish(task_id, TaskState.COMPLETED, result=result, expect_holder=agent)
 
     def fail_task(self, task_id: str, agent: str, error: str, result: dict | None = None) -> Task:
         """`result` may carry partial output/usage — a failed run's tokens still cost
         electricity, and the accounting should not have holes."""
         self._require_holder(task_id, agent)
-        return self._finish(task_id, TaskState.FAILED, result=result, error=error)
+        return self._finish(
+            task_id, TaskState.FAILED, result=result, error=error, expect_holder=agent
+        )
 
     def cancel_task(
         self, task_id: str, by: str, privileged: bool = False, reason: str | None = None
@@ -926,8 +947,8 @@ class Store:
             # Summaries carry progress, so the question rides along — a wait_task
             # return alone tells the caller what the worker is asking.
             self._db.execute(
-                "UPDATE tasks SET progress_msg = ? WHERE id = ?",
-                (f"awaiting input: {question[:300]}", task_id),
+                "UPDATE tasks SET progress_msg = ?, input_required_at = ? WHERE id = ?",
+                (f"awaiting input: {question[:300]}", now(), task_id),
             )
             self._db.commit()
         self.post_message(room.id, agent, question)
@@ -1095,6 +1116,7 @@ class Store:
         state: TaskState,
         result: dict | None = None,
         error: str | None = None,
+        expect_holder: str | None = None,
     ) -> Task:
         """Move a task to a terminal state, once.
 
@@ -1108,7 +1130,8 @@ class Store:
                                     progress_pct = CASE WHEN ? = 'completed' THEN 100.0
                                                         ELSE progress_pct END,
                                     progress_msg = ?
-                   WHERE id = ? AND state NOT IN (?, ?, ?)""",
+                   WHERE id = ? AND state NOT IN (?, ?, ?)
+                         AND (? IS NULL OR assignee = ?)""",
                 (
                     str(state),
                     json.dumps(result) if result is not None else None,
@@ -1120,6 +1143,8 @@ class Store:
                     str(TaskState.COMPLETED),
                     str(TaskState.FAILED),
                     str(TaskState.CANCELLED),
+                    expect_holder,
+                    expect_holder,
                 ),
             )
             self._db.commit()
@@ -1163,6 +1188,9 @@ class Store:
             project=row["project"] if "project" in row.keys() else None,
             output_mode=row["output_mode"] if "output_mode" in row.keys() else None,
             data=row["data"] if "data" in row.keys() else None,
+            input_required_at=(
+                row["input_required_at"] if "input_required_at" in row.keys() else None
+            ),
             room_id=row["room_id"],
             progress_pct=row["progress_pct"],
             progress_msg=row["progress_msg"],
@@ -1188,21 +1216,24 @@ class Store:
         return [{"id": r.id, "title": r.title, "project": r.project} for r in rows[:limit]]
 
     def _unretrieved_rows(self, project: str | None = None):
-        """Completed tasks with files none of which anyone ever fetched."""
+        """Completed tasks with files none of which anyone ever fetched.
 
+        Fetches the whole fetched-artifact-id set once (a single query) rather than a
+        COUNT per task — whoami calls this at session start and must return fast.
+        """
+        with self._lock:
+            fetched_ids = {
+                r["id"]
+                for r in self._db.execute(
+                    "SELECT id FROM artifacts WHERE fetched_at IS NOT NULL"
+                ).fetchall()
+            }
         out = []
         for t in self.list_tasks(state=TaskState.COMPLETED, project=project, limit=500):
-            files = (t.result or {}).get("files") or []
-            ids = [f["artifact_id"] for f in files if "artifact_id" in f]
-            if not ids:
-                continue
-            with self._lock:
-                fetched = self._db.execute(
-                    f"SELECT COUNT(*) AS n FROM artifacts WHERE id IN "
-                    f"({','.join('?' * len(ids))}) AND fetched_at IS NOT NULL",
-                    ids,
-                ).fetchone()["n"]
-            if fetched == 0:
+            ids = [
+                f["artifact_id"] for f in (t.result or {}).get("files") or [] if "artifact_id" in f
+            ]
+            if ids and not any(i in fetched_ids for i in ids):
                 out.append(t)
         return out
 
@@ -1417,12 +1448,14 @@ class Store:
             "sha256": digest,
         }
 
-    def get_artifact(self, artifact_id: str) -> tuple[dict, bytes]:
+    def get_artifact(self, artifact_id: str, collect: bool = True) -> tuple[dict, bytes]:
+        """collect=False reads the bytes WITHOUT marking the result collected — for
+        previews/inspection, which must not zero out the "uncollected work" nudge."""
         with self._lock:
             row = self._db.execute(
                 "SELECT * FROM artifacts WHERE id = ?", (artifact_id,)
             ).fetchone()
-            if row:
+            if row and collect:
                 self._db.execute(
                     "UPDATE artifacts SET fetched_at = COALESCE(fetched_at, ?) WHERE id = ?",
                     (now(), artifact_id),
@@ -1491,10 +1524,8 @@ class Store:
                 # but not forever: a stranded question failed one task for 41 minutes
                 # before anyone noticed. Fail with the question in the error so the
                 # requester sees WHAT was asked, not just that time passed.
-                if (
-                    task.state is TaskState.INPUT_REQUIRED
-                    and ref - (task.claimed_at or task.created_at) > INPUT_REQUIRED_TTL_S
-                ):
+                asked_at = task.input_required_at or task.claimed_at or task.created_at
+                if task.state is TaskState.INPUT_REQUIRED and ref - asked_at > INPUT_REQUIRED_TTL_S:
                     question = (task.progress_msg or "").removeprefix("awaiting input: ")
                     with contextlib.suppress(HubError):
                         self._finish(

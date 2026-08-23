@@ -410,8 +410,14 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
         liveness = {}
         for name in participants:
             with contextlib.suppress(HubError):
-                liveness[name] = str(store.require_agent(name).status())
-        offline = [n for n, st in liveness.items() if st == "offline"]
+                agent = store.require_agent(name)
+                # A dialogue needs workers that actually take turns; an online session
+                # identity (claude:/operator:) as a "participant" is silent dead air.
+                if agent.kind != AgentKind.WORKER:
+                    liveness[name] = "not_a_worker"
+                else:
+                    liveness[name] = str(agent.status())
+        offline = [n for n, st in liveness.items() if st in ("offline", "not_a_worker")]
         if offline:
             raise HubError(
                 ErrorCode.CONFLICT,
@@ -558,15 +564,16 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
         ack = {"task_id": task.id, "task": task.to_summary()}
         if routed_note:
             ack["routing_note"] = routed_note
+        notes: list[str] = []
         if dedupe_key and task.created_at < submitted_at:
             # The key matched an existing live/completed task; nothing new was made.
             ack["deduped"] = True
-            ack["note"] = (
+            notes.append(
                 f"dedupe_key matched existing {task.id} ('{task.title}', {task.state}) "
                 "— no new task was created."
             )
-        if len(spec.strip()) < 20:
-            ack["note"] = (
+        elif len(spec.strip()) < 20:
+            notes.append(
                 f"spec is only {len(spec.strip())} chars — the worker sees nothing but "
                 "this text (it cannot read your files or this conversation), so an "
                 "underspecified task usually comes back as a question or a guess."
@@ -574,7 +581,7 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
         if assignee_status is not None:
             ack["assignee_status"] = assignee_status
             if assignee_status == "offline":
-                ack["note"] = (
+                notes.append(
                     f"{assignee} is registered but offline — the task stays queued "
                     "until it reconnects."
                 )
@@ -586,10 +593,12 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
             ]
             ack["selector_online_matches"] = len(matches)
             if not matches:
-                ack["note"] = (
+                notes.append(
                     f"no online agent currently carries tag '{selector}' — the task "
                     "stays queued until one does."
                 )
+        if notes:
+            ack["notes"] = notes
         return ack
 
     @mcp.tool
@@ -615,8 +624,6 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
         manifest, and content in one call.
         """
         task = store.require_task(task_id)
-        if task.state.terminal:
-            store.mark_collected(task)
         payload = {
             "task_id": task.id,
             "state": str(task.state),
@@ -629,7 +636,11 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
             for entry in files:
                 if "artifact_id" not in entry:
                     continue
-                _, content = store.get_artifact(entry["artifact_id"])
+                try:
+                    _, content = store.get_artifact(entry["artifact_id"])  # real pull → collected
+                except HubError:
+                    entry["missing"] = True
+                    continue
                 if len(content) <= MAX_FILE_FETCH_BYTES:
                     try:
                         entry["content"] = content.decode("utf-8")
@@ -711,12 +722,22 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
 
     @mcp.tool
     @_guard
-    def cancel_all(project: str | None = None, force: bool = False) -> dict:
-        """Emergency stop: cancel every queued/claimed/working task in one call.
+    def cancel_all(
+        project: str | None = None, force: bool = False, all_projects: bool = False
+    ) -> dict:
+        """Emergency stop: cancel queued/claimed/working tasks in one call.
 
-        force=true includes actively-working tasks. Returns the per-task terminal
-        receipt table — the accurate final-state report comes free.
+        Scoped to `project` by default — a fleet-wide wipe across every project and
+        session needs all_projects=True set explicitly, so an emergency stop can't
+        silently kill an unrelated session's in-flight work. force=true includes
+        actively-working tasks. Returns the per-task terminal receipt table.
         """
+        if not project and not all_projects:
+            raise HubError(
+                ErrorCode.INVALID,
+                "cancel_all needs a project= scope, or all_projects=True to confirm a "
+                "fleet-wide stop across every session",
+            )
         receipts = []
         for t in store.list_tasks(project=project, limit=500):
             if not t.state.terminal and (force or str(t.state) != "working"):
@@ -855,7 +876,11 @@ def build_mcp(store: Store, config: HubConfig) -> FastMCP:
             for entry in files:
                 if "artifact_id" not in entry:
                     continue
-                _, content = store.get_artifact(entry["artifact_id"])
+                try:
+                    _, content = store.get_artifact(entry["artifact_id"])
+                except HubError:
+                    entry["missing"] = True
+                    continue
                 if len(content) > MAX_FILE_FETCH_BYTES:
                     entry["http"] = f"/api/v1/artifacts/{entry['artifact_id']}"
                     continue
