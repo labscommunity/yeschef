@@ -12,11 +12,11 @@ thinking; the kitchen does the reps.
 ![One prompt in Claude Code: fire a ticket to a local cook, the expediter subagent appears on the rail, and the finished plates come back on their own](docs/claude-demo.gif)
 
 *One prompt, live session: Claude shows the line — every cook's model and machine
-(`grill · ollama/qwen2.5:7b-instruct @ miner`) — fires the buildout, and spawns the
+(`line-cook · qwen2.5:7b · file tools`) — fires the buildout, and spawns the
 `yeschef-expediter` subagent, visible in the native panel like any subagent. The session
 comes straight back to you; when the cook finishes, the expediter calls it back on its
-own, plates the files in `./site`, and Claude tastes the cook's work against the spec.
-No hovering, no "is it up yet."*
+own, plates the files in `./site`, and Claude tastes the cook's work against the spec —
+catching the local model's drift and tidying it locally. No hovering, no "is it up yet."*
 
 ```
    Claude Code ──MCP/HTTP──▶ ┌─────────┐ ◀──REST+SSE── cook ──▶ Ollama  (office-mac)
