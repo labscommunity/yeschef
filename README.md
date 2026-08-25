@@ -230,4 +230,4 @@ uv run pytest              # thread-level race regressions included
 uv run ruff check src tests
 ```
 
-MIT. Formerly `farmteam` / `cascadia-tasks`; the old CLI names still work as aliases.
+MIT.
