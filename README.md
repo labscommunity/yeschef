@@ -146,6 +146,8 @@ fires the verifiable grunt work down the line.
 
 ## What a cook is
 
+![Choose your cook — the crew badged by model: openrouter routes every order, llama3.2:3b takes small orders fast, qwen2.5:7b holds steady all service, kimi-k2 holds the whole menu](docs/choose-your-cook.jpg)
+
 `yeschef join` clocks one in from whatever model server it finds. A TOML config (see
 [`examples/agents/`](examples/agents/)) is for pinning a persona, capability tags
 (`tier:fast`, `tier:reasoning` — fire by tag and the first free match takes the ticket),
