@@ -15,7 +15,7 @@ PROBE_TIMEOUT_S = 1.5
 
 @dataclass(slots=True)
 class DetectedBackend:
-    runtime: str  # "ollama" | "vllm" | "lmstudio" | ...
+    runtime: str  # "ollama" | "vllm" | "lmstudio" | "exo" | "cascadia" | ...
     base_url: str  # OpenAI-compatible base, e.g. http://localhost:11434/v1
     models: list[str]
 
@@ -37,7 +37,8 @@ _PROBES = [
     ("ollama", 11434, "/api/tags"),
     ("vllm", 8000, "/v1/models"),
     ("lmstudio", 1234, "/v1/models"),
-    ("openai_compat", 8080, "/v1/models"),  # Tahoma's usual port
+    ("exo", 52415, "/v1/models"),  # exo's ChatGPT-compatible API (a whole cluster as one endpoint)
+    ("cascadia", 8080, "/v1/models"),  # Cascadia's usual port
 ]
 
 

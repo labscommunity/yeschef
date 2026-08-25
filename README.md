@@ -218,9 +218,11 @@ fire work out (not just how), install the bundled skill: `yeschef install-skill`
 yeschef is a client of the local-inference ecosystem, not a fork of it: it talks to
 [Ollama](https://github.com/ollama/ollama) (and the
 [llama.cpp](https://github.com/ggml-org/llama.cpp) engine underneath it),
-[vLLM](https://github.com/vllm-project/vllm), LM Studio, and any OpenAI- or
-Anthropic-compatible endpoint. The MCP server is built on
-[FastMCP](https://github.com/jlowin/fastmcp). Those projects do the hard part.
+[vLLM](https://github.com/vllm-project/vllm), LM Studio,
+[exo](https://github.com/exo-explore/exo) (auto-detected — a whole device cluster shows
+up as one cook), Cascadia, and any OpenAI- or Anthropic-compatible endpoint. The MCP
+server is built on [FastMCP](https://github.com/jlowin/fastmcp). Those projects do the
+hard part.
 
 ## Development
 
