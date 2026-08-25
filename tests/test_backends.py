@@ -286,11 +286,23 @@ async def test_build_backend_selects_the_adapter() -> None:
     assert isinstance(openai, OpenAICompatBackend)
     await openai.close()
 
-    # Tahoma serves an OpenAI-compatible API; it is the same adapter, relabelled.
+    # Cascadia serves an OpenAI-compatible API; it is the same adapter, relabelled.
+    cascadia = build_backend({"type": "cascadia", "base_url": "http://mini:8080/v1", "model": "q"})
+    assert isinstance(cascadia, OpenAICompatBackend)
+    assert cascadia.name == "cascadia"
+    await cascadia.close()
+
+    # `tahoma` is the former name — still accepted, resolves to the cascadia label.
     tahoma = build_backend({"type": "tahoma", "base_url": "http://mini:8080/v1", "model": "q"})
     assert isinstance(tahoma, OpenAICompatBackend)
-    assert tahoma.name == "tahoma"
+    assert tahoma.name == "cascadia"
     await tahoma.close()
+
+    # exo presents a whole cluster as one OpenAI-compatible endpoint.
+    exo = build_backend({"type": "exo", "base_url": "http://localhost:52415/v1", "model": "q"})
+    assert isinstance(exo, OpenAICompatBackend)
+    assert exo.name == "exo"
+    await exo.close()
 
 
 async def test_build_backend_rejects_an_unknown_type() -> None:

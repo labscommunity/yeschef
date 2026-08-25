@@ -1,0 +1,29 @@
+# A cook backed by Cascadia — the Intel-native distributed inference engine — serving an
+# OpenAI-compatible API. `yeschef join` auto-detects it on :8080; a config file pins a
+# persona, tags, or tools. `type = "cascadia"` (formerly `tahoma`, still accepted).
+#
+#   yeschef agent run -c examples/agents/cascadia-worker.toml
+
+name = "roast"
+hub = "http://hub-host:8787"
+tags = ["tier:reasoning"]
+
+[backend]
+type = "cascadia"
+base_url = "http://localhost:8080/v1"
+model = "qwen3.6-35b-moe"
+timeout_s = 900
+
+[persona]
+system_prompt = """
+You are roast, a heavyweight cook backed by Cascadia. You take the tickets that need a
+big model and real reasoning: analysis, code review, multi-step planning. Be concrete
+and answer with the result.
+"""
+reply_when = "mentioned"
+
+[runtime]
+max_tokens = 4096
+temperature = 0.4
+max_context_messages = 30
+max_concurrent_tasks = 1

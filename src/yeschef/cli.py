@@ -331,7 +331,8 @@ def join(
         None, help="Env var holding the API key (for a cloud provider or a secured endpoint)."
     ),
     backend: str = typer.Option(
-        "openai_compat", help="Backend adapter: openai_compat | anthropic_compat | tahoma."
+        "openai_compat",
+        help="Backend adapter: openai_compat | anthropic_compat | cascadia | exo.",
     ),
     tier: str = typer.Option(None, help="Capability tier tag, e.g. fast or reasoning."),
     tag: list[str] = typer.Option(None, "--tag", help="Extra capability tag (repeatable)."),
@@ -375,7 +376,7 @@ def join(
         if detected is None:
             console.print(
                 "[red]no local model server found[/red] on the usual ports (Ollama 11434, "
-                "vLLM 8000, LM Studio 1234).\nStart one, pass [cyan]--base-url[/cyan] + "
+                "vLLM 8000, LM Studio 1234, exo 52415).\nStart one, pass [cyan]--base-url[/cyan] + "
                 "[cyan]--model[/cyan], or use a cloud provider with [cyan]--provider[/cyan]."
             )
             raise typer.Exit(1)

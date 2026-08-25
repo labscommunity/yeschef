@@ -6,7 +6,7 @@
 
 A communication and task-orchestration layer between Claude Code and local AI agents
 running on your own machines. Claude Code stays on the Anthropic API; local agents are
-independent processes running against local model backends (Ollama, Tahoma, vLLM, any
+independent processes running against local model backends (Ollama, exo, Cascadia, vLLM, any
 OpenAI-compatible endpoint). The hub gives both sides a shared fabric for:
 
 - **Tasks** — dispatch long-running work to a local agent, check status at any time,
@@ -39,7 +39,7 @@ yeschef/
 │   ├── hub/          # FastMCP server + agent-facing HTTP/SSE API + SQLite store
 │   ├── sdk/          # Python client library — THE protocol contract
 │   ├── agent/        # reference harness daemon (uses sdk/)
-│   │   └── backends/ # anthropic_compat, openai_compat (local or cloud), tahoma, cli
+│   │   └── backends/ # anthropic_compat, openai_compat (local/cloud; cascadia + exo presets), cli
 │   ├── tools/        # opt-in worker-side tool executor (shell, file, web_fetch)
 │   └── cli.py        # `yeschef` command
 ├── SPEC.md
@@ -51,7 +51,7 @@ yeschef/
   - `/api/v1` — REST + SSE, for agents (harness daemons or anything embedding the SDK).
   - State in SQLite (WAL mode). No other infrastructure.
 - **SDK** — `yeschef.sdk.AgentClient`: register, stream events, send messages,
-  claim/update tasks. This is the contract; Tahoma (or anything else) can embed it to
+  claim/update tasks. This is the contract; Cascadia (or anything else) can embed it to
   become a first-class agent without running the harness.
 - **Harness** — reference agent runtime: config file in, named room-participating,
   task-working agent out. One process per agent; multiple agents per node allowed.
@@ -200,7 +200,7 @@ One TOML config per agent:
 name = "miner-qwen"
 hub = "http://mini.local:8787"
 [backend]
-type = "openai_compat"            # anthropic_compat | openai_compat | tahoma | cli
+type = "openai_compat"            # anthropic_compat | openai_compat | cascadia | exo | cli
 base_url = "http://localhost:8000/v1"
 model = "qwen3-8b"
 max_context_tokens = 32768
@@ -228,8 +228,9 @@ Behavior:
   node, never the hub.
 - **Backends:** `anthropic_compat` (Ollama v0.14+ — remember to raise Ollama's 4,096
   default context or long tasks silently truncate), `openai_compat` (vLLM on the miner,
-  LM Studio, anything `/v1/chat/completions`), `tahoma` (thin adapter to whatever
-  Tahoma serves; if Tahoma exposes OpenAI-compat, this collapses to a config preset).
+  LM Studio, anything `/v1/chat/completions`), `cascadia` and `exo` (OpenAI-compatible
+  presets over the same adapter, relabelled for the roster — `exo` presents a whole
+  device cluster as one endpoint; `tahoma` stays as a back-compat alias for `cascadia`).
 
 ## 7. Failure and lifecycle semantics
 
@@ -246,7 +247,7 @@ Behavior:
 
 - **Hub:** the always-on box (a Mac mini works well), launchd/systemd service, port 8787.
 - **Workers:** three mini-PCs — harness + Ollama; one GPU box — harness + vLLM
-  (existing models only; root disk at 98%); Tahoma nodes via SDK or `tahoma` backend.
+  (existing models only; root disk at 98%); Cascadia nodes via SDK or `cascadia` backend.
 - **Claude Code (any machine):**
   `claude mcp add --transport http yeschef http://mini.local:8787/mcp`
 
@@ -260,16 +261,16 @@ Behavior:
    round-robin floor control, `openai_compat` backend (vLLM on miner), artifacts.
    Exit test: two local agents converse to a stop-phrase while Claude observes and
    interjects once.
-3. **M3 — tools + watch + Tahoma:** opt-in tool executor, `/watch` + Monitor recipe,
-   `tahoma` backend, CLI polish, `input_required` flow.
+3. **M3 — tools + watch + Cascadia:** opt-in tool executor, `/watch` + Monitor recipe,
+   `cascadia` backend, CLI polish, `input_required` flow.
 4. **M4 — forward compatibility (as ecosystem lands):** FastMCP `task=True` (MCP Tasks
    extension), Claude Code channel for push when channels GA, optional A2A v1.0 face
    over the same store if non-Claude agents ever need to submit work.
 
 ## 10. Non-goals (v1)
 
-- Not a model router or load balancer (Tahoma's job) — the hub schedules *agents*, not
-  GPU shards.
+- Not a model router or load balancer (Cascadia's / exo's job) — the hub schedules
+  *agents*, not GPU shards.
 - No web dashboard (CLI + SQLite queries; revisit after M3).
 - No WAN federation, no TLS termination (Tailscale provides transport encryption), no
   multi-tenant auth.

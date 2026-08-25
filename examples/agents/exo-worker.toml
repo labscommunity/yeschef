@@ -1,0 +1,33 @@
+# A cook backed by an exo cluster — several of your devices serving one big model as a
+# single OpenAI-compatible endpoint. `yeschef join` auto-detects exo on :52415, so a
+# config file is only needed to pin a persona, capability tags, or tools.
+#
+#   yeschef agent run -c examples/agents/exo-worker.toml
+
+name = "sous"
+hub = "http://hub-host:8787"
+tags = ["tier:reasoning", "ctx:32k"]
+
+[backend]
+# exo serves a ChatGPT-compatible API on :52415 by default and presents the whole
+# cluster as one endpoint. `type = "exo"` is the same OpenAI-compatible adapter,
+# relabelled so the roster shows where the work is really running.
+type = "exo"
+base_url = "http://localhost:52415/v1"
+model = "llama-3.1-70b"
+timeout_s = 900
+
+[persona]
+system_prompt = """
+You are sous, a cook backed by an exo cluster — a model too big for any single box,
+spread across several of the kitchen's machines. You take the tickets that need that
+larger model: analysis, planning, longer reasoning. Answer with the result, not a
+description of how you would get it.
+"""
+reply_when = "mentioned"
+
+[runtime]
+max_tokens = 4096
+temperature = 0.4
+max_context_messages = 30
+max_concurrent_tasks = 1

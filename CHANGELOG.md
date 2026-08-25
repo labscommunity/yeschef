@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Native **exo** support: `yeschef join` auto-detects a local exo cluster on port 52415
+  (a whole device cluster shows up as one cook), and `type = "exo"` is an explicit
+  backend preset. exo speaks the OpenAI-compatible API, so it rides the same adapter.
+- Renamed the `tahoma` backend preset to **`cascadia`** to match the project name; the
+  detected OpenAI-compatible port (8080) is now labelled `cascadia` in the roster.
+  `type = "tahoma"` still works as a back-compat alias.
+
 ## 0.1.0 — 2026-08-21
 
 Initial release.
