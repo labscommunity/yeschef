@@ -15,8 +15,8 @@ thinking; the kitchen does the reps.
 (`grill · ollama/qwen2.5:7b-instruct @ miner`), then fires the buildout, and spawns the
 `yeschef-expediter` subagent, visible in the native panel like any subagent. The session
 comes straight back to you; when the cook finishes, the expediter calls it back on its
-own, plates the files in `./site`, and Claude tastes the cook's work against the spec.
-No hovering, no "is it up yet."*
+own, plates the files in `./site`, and Claude tastes the cook's work against the spec —
+catching the local model's drift and tidying it locally. No hovering, no "is it up yet."*
 
 ```
    Claude Code ──MCP/HTTP──▶ ┌─────────┐ ◀──REST+SSE── cook ──▶ Ollama  (office-mac)
@@ -145,6 +145,8 @@ throttled, and whose ticket status outlives any session. Claude Code stays the c
 fires the verifiable grunt work down the line.
 
 ## What a cook is
+
+![Choose your cook — the crew badged by model: openrouter routes every order, llama3.2:3b takes small orders fast, qwen2.5:7b holds steady all service, kimi-k2 holds the whole menu](docs/choose-your-cook.jpg)
 
 `yeschef join` clocks one in from whatever model server it finds. A TOML config (see
 [`examples/agents/`](examples/agents/)) is for pinning a persona, capability tags
