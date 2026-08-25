@@ -85,6 +85,14 @@ def test_pick_model_without_a_list_keeps_the_preference() -> None:
     assert backend.pick_model(None) is None
 
 
+def test_autodetect_probes_include_exo_and_cascadia() -> None:
+    from yeschef.agent.detect import _PROBES
+
+    ports = {runtime: port for runtime, port, _ in _PROBES}
+    assert ports["exo"] == 52415  # a whole exo cluster shows up as one local endpoint
+    assert ports["cascadia"] == 8080
+
+
 def test_provider_presets_cover_the_common_clouds() -> None:
     from yeschef.cli import PROVIDER_PRESETS
 

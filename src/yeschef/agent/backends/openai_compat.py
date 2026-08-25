@@ -1,4 +1,4 @@
-"""Any OpenAI-compatible /chat/completions endpoint: vLLM, LM Studio, Ollama, Tahoma."""
+"""Any OpenAI-compatible /chat/completions endpoint: vLLM, LM Studio, Ollama, exo, Cascadia."""
 
 from __future__ import annotations
 
