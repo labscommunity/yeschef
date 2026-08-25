@@ -1,7 +1,12 @@
-# Renders docs/claude-demo.gif — the full yeschef loop from one prompt:
-# the line (local models, named machines) → fire the ticket → the yeschef-expediter
-# subagent appears in the panel → the plate and its files come back on their own.
-# No polling.
+# Drives the terminal session behind docs/claude-demo.gif — the full yeschef loop
+# from one prompt: the line (local models, named machines) → fire the ticket → the
+# yeschef-expediter subagent appears in the panel → the plate and its files come back
+# on their own. No polling.
+#
+# NOTE: docs/claude-demo.gif is no longer the raw VHS render. The shipped gif is a
+# screen recording of this session inside the branded "Yes, Chef!" frame, converted
+# with gifski (1280x720, 25 fps, --quality 85 --motion-quality 70, light hqdn3d
+# temporal denoise). Re-running vhs OVERWRITES the branded gif with a plain render.
 #
 # Live session, not a replay. Playback runs at 2x (typing slowed to compensate); the
 # hidden cut skips part of the local cook's build time. Re-recording needs a reachable
