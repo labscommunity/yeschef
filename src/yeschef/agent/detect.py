@@ -15,7 +15,7 @@ PROBE_TIMEOUT_S = 1.5
 
 @dataclass(slots=True)
 class DetectedBackend:
-    runtime: str  # "ollama" | "vllm" | "lmstudio" | "exo" | "cascadia" | ...
+    runtime: str  # "ollama" | "vllm" | "lmstudio" | "exo" | "cascadia" | "apple_fm" | ...
     base_url: str  # OpenAI-compatible base, e.g. http://localhost:11434/v1
     models: list[str]
 
@@ -39,6 +39,7 @@ _PROBES = [
     ("lmstudio", 1234, "/v1/models"),
     ("exo", 52415, "/v1/models"),  # exo's ChatGPT-compatible API (a whole cluster as one endpoint)
     ("cascadia", 8080, "/v1/models"),  # Cascadia's usual port
+    ("apple_fm", 1976, "/v1/models"),  # `fm serve`: Apple's on-device model (macOS 26+)
 ]
 
 
@@ -46,7 +47,11 @@ def _models_from(runtime: str, payload: dict) -> list[str]:
     if runtime == "ollama":
         return [m.get("name") or m.get("model") for m in payload.get("models", []) if m]
     data = payload.get("data") or []
-    return [entry.get("id") for entry in data if entry.get("id")]
+    models = [entry.get("id") for entry in data if entry.get("id")]
+    if runtime == "apple_fm":
+        # `fm serve` also lists `pcc` (Private Cloud Compute); only `system` is local.
+        models = [m for m in models if m == "system"]
+    return models
 
 
 def probe(host: str = "localhost", timeout: float = PROBE_TIMEOUT_S) -> list[DetectedBackend]:

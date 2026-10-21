@@ -332,7 +332,7 @@ def join(
     ),
     backend: str = typer.Option(
         "openai_compat",
-        help="Backend adapter: openai_compat | anthropic_compat | cascadia | exo.",
+        help="Backend adapter: openai_compat | anthropic_compat | cascadia | exo | apple_fm.",
     ),
     tier: str = typer.Option(None, help="Capability tier tag, e.g. fast or reasoning."),
     tag: list[str] = typer.Option(None, "--tag", help="Extra capability tag (repeatable)."),
@@ -376,13 +376,16 @@ def join(
         if detected is None:
             console.print(
                 "[red]no local model server found[/red] on the usual ports (Ollama 11434, "
-                "vLLM 8000, LM Studio 1234, exo 52415).\nStart one, pass [cyan]--base-url[/cyan] + "
-                "[cyan]--model[/cyan], or use a cloud provider with [cyan]--provider[/cyan]."
+                "vLLM 8000, LM Studio 1234, exo 52415, fm serve 1976).\n"
+                "Start one, pass [cyan]--base-url[/cyan] + [cyan]--model[/cyan], "
+                "or use a cloud provider with [cyan]--provider[/cyan]."
             )
             raise typer.Exit(1)
         base_url = detected.base_url
         runtime = detected.runtime
         model = detected.pick_model(model)
+        if runtime == "apple_fm" and backend == "openai_compat":
+            backend = "apple_fm"  # pins on-device, non-streaming, and the small context
         console.print(
             f"[green]✓[/green] found [bold]{detected.runtime}[/bold] at {base_url}"
             + (f" → model [bold]{model}[/bold]" if model else "")

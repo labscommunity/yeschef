@@ -39,7 +39,7 @@ yeschef/
 │   ├── hub/          # FastMCP server + agent-facing HTTP/SSE API + SQLite store
 │   ├── sdk/          # Python client library — THE protocol contract
 │   ├── agent/        # reference harness daemon (uses sdk/)
-│   │   └── backends/ # anthropic_compat, openai_compat (local/cloud; cascadia + exo presets), cli
+│   │   └── backends/ # anthropic_compat, openai_compat (local/cloud; cascadia + exo presets), apple_fm, cli
 │   ├── tools/        # opt-in worker-side tool executor (shell, file, web_fetch)
 │   └── cli.py        # `yeschef` command
 ├── SPEC.md
@@ -200,7 +200,7 @@ One TOML config per agent:
 name = "miner-qwen"
 hub = "http://mini.local:8787"
 [backend]
-type = "openai_compat"            # anthropic_compat | openai_compat | cascadia | exo | cli
+type = "openai_compat"            # anthropic_compat | openai_compat | cascadia | exo | apple_fm | cli
 base_url = "http://localhost:8000/v1"
 model = "qwen3-8b"
 max_context_tokens = 32768
@@ -230,7 +230,12 @@ Behavior:
   default context or long tasks silently truncate), `openai_compat` (vLLM on the miner,
   LM Studio, anything `/v1/chat/completions`), `cascadia` and `exo` (OpenAI-compatible
   presets over the same adapter, relabelled for the roster — `exo` presents a whole
-  device cluster as one endpoint; `tahoma` stays as a back-compat alias for `cascadia`).
+  device cluster as one endpoint; `tahoma` stays as a back-compat alias for `cascadia`),
+  and `apple_fm` (Apple's on-device Foundation Model via `fm serve` on 127.0.0.1:1976,
+  macOS 26+; same adapter with `stream: false`, replies capped at 1,024 tokens for the
+  model's 4,096-token context, and only the `system` model accepted, because `pcc` and
+  custom providers leave the machine). It does not emit native tool calls, so run it
+  chat-only.
 
 ## 7. Failure and lifecycle semantics
 

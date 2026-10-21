@@ -91,6 +91,14 @@ def test_autodetect_probes_include_exo_and_cascadia() -> None:
     ports = {runtime: port for runtime, port, _ in _PROBES}
     assert ports["exo"] == 52415  # a whole exo cluster shows up as one local endpoint
     assert ports["cascadia"] == 8080
+    assert ports["apple_fm"] == 1976  # `fm serve`, Apple's on-device model
+
+
+def test_apple_fm_detection_keeps_only_the_on_device_model() -> None:
+    from yeschef.agent.detect import _models_from
+
+    payload = {"data": [{"id": "system"}, {"id": "pcc"}]}
+    assert _models_from("apple_fm", payload) == ["system"]
 
 
 def test_provider_presets_cover_the_common_clouds() -> None:

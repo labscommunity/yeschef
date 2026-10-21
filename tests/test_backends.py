@@ -9,6 +9,7 @@ import pytest
 
 from yeschef.agent.backends import build_backend
 from yeschef.agent.backends.anthropic_compat import AnthropicCompatBackend
+from yeschef.agent.backends.apple_fm import MAX_REPLY_TOKENS, AppleFMBackend
 from yeschef.agent.backends.base import ToolCall, ToolResult, Turn
 from yeschef.agent.backends.openai_compat import OpenAICompatBackend
 
@@ -335,4 +336,62 @@ async def test_build_backend_threads_extra_headers() -> None:
         }
     )
     assert backend._http.headers["x-title"] == "yeschef"
+    await backend.close()
+
+
+# ------------------------------------------------------------- apple fm
+
+
+async def test_apple_fm_defaults_to_the_local_fm_serve() -> None:
+    backend = build_backend({"type": "apple_fm"})
+    assert isinstance(backend, AppleFMBackend)
+    assert backend.name == "apple_fm"
+    assert backend.base_url == "http://127.0.0.1:1976/v1"
+    assert backend.model == "system"
+    await backend.close()
+
+
+async def test_apple_fm_refuses_models_that_leave_the_machine() -> None:
+    # `pcc` is Private Cloud Compute; anything else is a custom provider behind fm serve.
+    for model in ("pcc", "gpt-4o"):
+        with pytest.raises(ValueError, match="on-device"):
+            build_backend({"type": "apple_fm", "model": model})
+        # extra_body lands in the payload after `model`; it must not smuggle one in.
+        with pytest.raises(ValueError, match="on-device"):
+            build_backend({"type": "apple_fm", "extra_body": {"model": model}})
+
+
+async def test_apple_fm_disables_streaming_and_caps_the_reply() -> None:
+    backend = AppleFMBackend(extra_body={"stream": True, "seed": 7})
+    capture: dict = {}
+    stub(
+        backend,
+        {
+            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 67, "completion_tokens": 3},
+        },
+        capture,
+    )
+
+    result = await backend.chat("sys", [Turn(role="user", content="hi")], max_tokens=4000)
+
+    assert capture["url"] == "http://127.0.0.1:1976/v1/chat/completions"
+    assert capture["body"]["stream"] is False  # fm serve streams unless told not to
+    assert capture["body"]["seed"] == 7
+    assert capture["body"]["max_tokens"] == MAX_REPLY_TOKENS
+    assert result.text == "ok"
+    assert result.total_tokens == 70
+    await backend.close()
+
+
+async def test_apple_fm_surfaces_the_server_error_message() -> None:
+    backend = AppleFMBackend()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        message = "The session's transcript exceeded the model's context size."
+        return httpx.Response(500, json={"error": {"code": "500", "message": message}})
+
+    backend._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    with pytest.raises(RuntimeError, match="exceeded the model's context size"):
+        await backend.chat("sys", [Turn(role="user", content="a very long prompt")])
     await backend.close()
