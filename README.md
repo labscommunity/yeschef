@@ -222,7 +222,8 @@ yeschef is a client of the local-inference ecosystem, not a fork of it: it talks
 [llama.cpp](https://github.com/ggml-org/llama.cpp) engine underneath it),
 [vLLM](https://github.com/vllm-project/vllm), LM Studio,
 [exo](https://github.com/exo-explore/exo) (auto-detected — a whole device cluster shows
-up as one cook), Cascadia, and any OpenAI- or Anthropic-compatible endpoint. The MCP
+up as one cook), Cascadia, Apple's on-device Foundation Model via `fm serve`
+(auto-detected on port 1976), and any OpenAI- or Anthropic-compatible endpoint. The MCP
 server is built on [FastMCP](https://github.com/jlowin/fastmcp). Those projects do the
 hard part.
 
