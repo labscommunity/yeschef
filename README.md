@@ -42,8 +42,9 @@ uv tool install yeschef-cli    # or: pipx install yeschef-cli, and the command i
 #    wires Claude Code, prints the clock-in line:
 yeschef up
 
-# 2. On each machine that will cook, auto-detects Ollama / vLLM / LM Studio,
-#    verifies the model answers, clocks the cook in. Paste the line `up` printed:
+# 2. On each machine that will cook, auto-detects Ollama / vLLM / LM Studio /
+#    Apple's `fm serve`, verifies the model answers, clocks the cook in.
+#    Paste the line `up` printed:
 yeschef join --hub http://hub-host:8787 --token <printed-by-up>
 ```
 
@@ -156,6 +157,10 @@ or **opt-in tools**: shell (pattern-allowlisted, metacharacter-screened), file a
 the cook's machine, never the hub. Anything embedding the Python SDK
 (`yeschef.sdk.AgentClient`) is a first-class cook too.
 
+**Macs can cook on Apple's own model.** On macOS 26+, run `fm serve` and `yeschef join`
+picks up Apple's on-device model as an `apple_fm` cook. In a config, `type = "apple_fm"`
+is all it needs. It stays on-device: Private Cloud Compute (`pcc`) is refused.
+
 **Cloud cooks, too.** A cook is just an OpenAI- or Anthropic-compatible client, so a
 hosted provider works exactly like a local one, and `yeschef join` has presets:
 
@@ -181,6 +186,9 @@ What this is, and isn't:
 - **A cloud cook (OpenRouter etc.) is the opposite trade**: metered, and your data
   leaves your network. It's supported and useful (cheap bulk work, models you can't run
   locally), but it's not the "own your hardware" default. Choose per cook.
+- **The Apple on-device cook is small.** 4,096 tokens of context shared by prompt and
+  reply, and no tool calls, so it's chat-only. Long rooms or tickets can overflow it; they
+  fail with a readable error instead of being silently truncated.
 - **No TLS termination**: the hub is designed for LAN/Tailscale (which encrypts
   transport). Never expose it through a public funnel or port-forward.
 - **Talking-it-out is real model output, not magic.** Small models sometimes say dull
